@@ -5,4 +5,4 @@ __pycache__/
 
 cache/*.json
 data/aact/*.txt
-data/reports/*.md
+data/reports/*.json
