@@ -1,28 +1,101 @@
-"""AACT (Aggregate Analysis of ClinicalTrials.gov) — static flat-file dataset.
+"""AACT (Aggregate Analysis of ClinicalTrials.gov) — live Postgres DB, with a
+static flat-file fallback.
 
 AACT and the ClinicalTrials.gov API are one dataset in two forms: AACT is for
 aggregated queries ("all trials on target X"), the API is for one study's detail
-(see fetch_clinicaltrials.py). Per the plan, start from the weekly static flat-file
-dump (no live DB connection) — more reliable for a demo.
+(see fetch_clinicaltrials.py).
 
-Download studies.txt / conditions.txt (pipe-delimited) from
-https://aact.ctti-clinicaltrials.org into data/aact/ before this will return data.
+Prefers a live, read-only connection to the AACT public Postgres database
+(aact-db.ctti-clinicaltrials.org) using credentials from the environment
+(AACT_DB_HOST/PORT/NAME/USER/PASSWORD — see .env.example). If those aren't set,
+or the live query fails for any reason, falls back to local static flat-files in
+data/aact/ (studies.txt / conditions.txt). Whichever succeeds first is cached by
+sources/cache.py, so a flaky live connection still doesn't risk a live demo.
 
 Owner: Клінічний аналітик (trial design) + Комерційний аналітик (competitors via sponsors).
 """
 import datetime
+import os
 from pathlib import Path
 from typing import Optional
+
+from .cache import cached
 
 AACT_DIR = Path(__file__).resolve().parent.parent / "data" / "aact"
 
 
 def fetch_aact(condition: str, intervention: str) -> Optional[list[dict]]:
-    """Count competing trials for a condition/intervention from the local AACT flat files.
+    """Count competing trials for a condition/intervention pair from AACT.
 
-    Returns None if the flat files haven't been downloaded yet — caller must not
-    crash the pipeline just because this optional local dataset is missing.
+    Returns None if neither the live DB nor the local flat-files are available —
+    caller must not crash the pipeline just because this source is unreachable.
     """
+    key = f"{condition}__{intervention}"
+    return cached("aact", key, lambda: _fetch(condition, intervention))
+
+
+def _fetch(condition: str, intervention: str) -> Optional[list[dict]]:
+    live = _fetch_live(condition, intervention)
+    if live is not None:
+        return live
+    return _fetch_flatfile(condition, intervention)
+
+
+def _fetch_live(condition: str, intervention: str) -> Optional[list[dict]]:
+    host = os.environ.get("AACT_DB_HOST")
+    if not host:
+        return None
+
+    try:
+        import psycopg2
+    except ImportError:
+        return None
+
+    try:
+        conn = psycopg2.connect(
+            host=host,
+            port=os.environ.get("AACT_DB_PORT", "5432"),
+            dbname=os.environ.get("AACT_DB_NAME", "aact"),
+            user=os.environ["AACT_DB_USER"],
+            password=os.environ["AACT_DB_PASSWORD"],
+            connect_timeout=10,
+        )
+    except (psycopg2.Error, KeyError):
+        return None
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT s.nct_id, s.brief_title, s.overall_status, s.phase
+                FROM ctgov.studies s
+                JOIN ctgov.conditions c ON c.nct_id = s.nct_id
+                WHERE c.name ILIKE %s AND s.brief_title ILIKE %s
+                LIMIT 200
+                """,
+                (f"%{condition}%", f"%{intervention}%"),
+            )
+            rows = cur.fetchall()
+    except psycopg2.Error:
+        return None
+    finally:
+        conn.close()
+
+    today = datetime.date.today().isoformat()
+    return [{
+        "source": "AACT live database (aact-db.ctti-clinicaltrials.org)",
+        "url": "https://aact.ctti-clinicaltrials.org",
+        "date_accessed": today,
+        "raw_snippet": (
+            f"{len(rows)} competing trials found for condition='{condition}', "
+            f"intervention='{intervention}'. Examples (nct_id, title, status, phase): "
+            f"{rows[:5]}"
+        ),
+    }]
+
+
+def _fetch_flatfile(condition: str, intervention: str) -> Optional[list[dict]]:
+    """Fallback: read studies.txt / conditions.txt downloaded into data/aact/."""
     try:
         import pandas as pd
     except ImportError:

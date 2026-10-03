@@ -73,7 +73,7 @@ unknowns, diligence questions) і ніколи не перетворює `infere
 │   ├── fetch_pubmed.py
 │   ├── fetch_opentargets.py
 │   ├── fetch_clinicaltrials.py
-│   └── fetch_aact.py           # читає локальні flat-файли з data/aact/
+│   └── fetch_aact.py           # жива Postgres БД, fallback — flat-файли з data/aact/
 ├── agents/
 │   ├── scientific_agent.py
 │   ├── clinical_agent.py
@@ -122,17 +122,26 @@ unknowns, diligence questions) і ніколи не перетворює `infere
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # вписати ANTHROPIC_API_KEY
+cp .env.example .env   # вписати ANTHROPIC_API_KEY (+ опційно AACT_DB_* для живої БД)
 streamlit run app.py
 # або без UI:
 python main.py "non-small cell lung cancer" "KRAS G12C inhibitor"
 python main.py "non-small cell lung cancer" "KRAS G12C inhibitor" "oral, Phase 1 ongoing"
 ```
 
-Для AACT завантажте flat-файли (`studies.txt`, `conditions.txt`) з
-aact.ctti-clinicaltrials.org у `data/aact/` — без них `fetch_aact` просто
-повертає `None`, і пайплайн продовжує роботу без цього джерела. (AACT не
-значиться в переліку джерел самого ТЗ, але це той самий датасет
+AACT підключається двома способами (`fetch_aact.py` пробує їх по черзі):
+1. **Жива БД** (пріоритетно) — заповніть `AACT_DB_HOST/PORT/NAME/USER/PASSWORD`
+   у `.env` (read-only доступ до `aact-db.ctti-clinicaltrials.org`, схема `ctgov`,
+   таблиці `studies`/`conditions`). Пароль лежить лише в `.env`, який у
+   `.gitignore` — ніколи не комітиться.
+2. **Flat-файли** (fallback) — якщо БД недоступна, завантажте `studies.txt` і
+   `conditions.txt` з aact.ctti-clinicaltrials.org у `data/aact/`.
+
+Якщо недоступне жодне з двох — `fetch_aact` повертає `None`, і пайплайн
+продовжує роботу без цього джерела. Перший успішний результат кешується
+(`sources/cache.py`), тож навіть короткий збій живої БД під час демо не зламає
+показ — далі піде з кешу. (AACT не значиться в переліку джерел самого ТЗ, але
+це той самий датасет
 ClinicalTrials.gov в агрегованому вигляді, а не нове джерело.)
 
 ## Жорсткі обмеження скоупу

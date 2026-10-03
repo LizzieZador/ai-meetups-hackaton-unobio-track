@@ -12,6 +12,10 @@ import datetime
 import json
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from agents.chair_agent import chair_agent
 from agents.clinical_agent import clinical_agent
 from agents.commercial_agent import commercial_agent
