@@ -1,0 +1,31 @@
+{
+  "agent": "commercial_agent",
+  "indication": "Non-Small Cell Lung Cancer",
+  "target": "KRAS G12C",
+  "claims": [
+    {
+      "claim": "Обсяг ринку NSCLC оцінюється в $24.5B з CAGR 8.2%",
+      "type": "evidence",
+      "source": "Market Epidemiology CSV (WHO/SEER)",
+      "date_accessed": "2026-10-03"
+    },
+    {
+      "claim": "Високий unmet need через резистентність до таргетної терапії 1-ї лінії",
+      "type": "inference",
+      "reasoning": "За даними аналізу компаній-конкурентів, 60% пацієнтів прогресують протягом 12 місяців",
+      "confidence": "high"
+    },
+    {
+      "claim": "Оцінка пікових продажів (Base Peak Sales) складає $1.2B на рік",
+      "type": "inference",
+      "reasoning": "Розраховано як 15% проникнення на ринок US/EU при вартості терапії $150k/рік",
+      "confidence": "medium"
+    }
+  ],
+  "financial_metrics": {
+    "peak_sales_low": 600,
+    "peak_sales_base": 1200,
+    "peak_sales_high": 2000,
+    "currency": "USD_millions"
+  }
+}

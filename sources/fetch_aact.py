@@ -1,59 +1,78 @@
-"""AACT (Aggregate Analysis of ClinicalTrials.gov) — static flat-file dataset.
+import csv
+import json
+import os
+from datetime import datetime
 
-AACT and the ClinicalTrials.gov API are one dataset in two forms: AACT is for
-aggregated queries ("all trials on target X"), the API is for one study's detail
-(see fetch_clinicaltrials.py). Per the plan, start from the weekly static flat-file
-dump (no live DB connection) — more reliable for a demo.
-
-Download studies.txt / conditions.txt (pipe-delimited) from
-https://aact.ctti-clinicaltrials.org into data/aact/ before this will return data.
-
-Owner: Клінічний аналітик (trial design) + Комерційний аналітик (competitors via sponsors).
-"""
-import datetime
-from pathlib import Path
-from typing import Optional
-
-AACT_DIR = Path(__file__).resolve().parent.parent / "data" / "aact"
+# Отримуємо корінь проєкту (виходимо з папки sources/ на рівень вгору)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+AACT_DIR = os.path.join(PROJECT_ROOT, "data", "aact")
 
 
-def fetch_aact(condition: str, intervention: str) -> Optional[list[dict]]:
-    """Count competing trials for a condition/intervention from the local AACT flat files.
+def get_competitors_from_aact(indication: str) -> dict:
+  """Шукає кількість активних випробувань (конкурентів) у локальних файлах AACT."""
+  conditions_file = os.path.join(AACT_DIR, "conditions.txt")
+  studies_file = os.path.join(AACT_DIR, "studies.txt")
 
-    Returns None if the flat files haven't been downloaded yet — caller must not
-    crash the pipeline just because this optional local dataset is missing.
-    """
-    try:
-        import pandas as pd
-    except ImportError:
-        return None
+  if not os.path.exists(conditions_file) or not os.path.exists(studies_file):
+    print(
+        f"Помилка: Не знайдено файли AACT за шляхом {AACT_DIR}. Перевірте"
+        " наявність conditions.txt та studies.txt"
+    )
+    return None
 
-    studies_path = AACT_DIR / "studies.txt"
-    conditions_path = AACT_DIR / "conditions.txt"
-    if not studies_path.exists() or not conditions_path.exists():
-        return None
+  date_str = datetime.now().strftime("%Y-%m-%d")
+  target_nct_ids = set()
 
-    try:
-        studies = pd.read_csv(studies_path, sep="|", low_memory=False)
-        conditions = pd.read_csv(conditions_path, sep="|", low_memory=False)
+  with open(conditions_file, mode="r", encoding="utf-8") as f:
+    reader = csv.DictReader(f, delimiter="|")
+    for row in reader:
+      condition_name = row.get("downcase_name", "")
+      if condition_name and indication.lower() in condition_name.lower():
+        target_nct_ids.add(row.get("nct_id"))
 
-        matching_nct_ids = conditions[
-            conditions["name"].str.contains(condition, case=False, na=False)
-        ]["nct_id"].unique()
-        matched = studies[
-            studies["nct_id"].isin(matching_nct_ids)
-            & studies["brief_title"].str.contains(intervention, case=False, na=False)
-        ]
+  if not target_nct_ids:
+    return _build_empty_response(indication, date_str)
 
-        today = datetime.date.today().isoformat()
-        return [{
-            "source": "AACT flat-file dump",
-            "url": "https://aact.ctti-clinicaltrials.org",
-            "date_accessed": today,
-            "raw_snippet": (
-                f"{len(matched)} competing trials found for "
-                f"condition='{condition}', intervention='{intervention}'"
-            ),
-        }]
-    except (KeyError, ValueError):
-        return None
+  active_trials_count = 0
+  phases_distribution = {}
+
+  with open(studies_file, mode="r", encoding="utf-8") as f:
+    reader = csv.DictReader(f, delimiter="|")
+    for row in reader:
+      if row.get("nct_id") in target_nct_ids:
+        status = row.get("overall_status", "").strip().lower()
+        is_active = any(
+            k in status for k in ["recruit", "active", "enrolling"]
+        ) and not any(
+            k in status for k in ["completed", "terminated", "withdrawn"]
+        )
+
+        if is_active:
+          active_trials_count += 1
+          phase = row.get("phase", "Unknown").strip()
+          phases_distribution[phase] = phases_distribution.get(phase, 0) + 1
+
+  return {
+      "source_type": "aact",
+      "indication": indication,
+      "raw_snippet": (
+          f"Знайдено {active_trials_count} активних клінічних випробувань за"
+          f" показанням '{indication}'. Розподіл за фазами:"
+          f" {phases_distribution}"
+      ),
+      "active_trials_count": active_trials_count,
+      "phases_distribution": phases_distribution,
+  }
+
+
+def _build_empty_response(indication: str, date_str: str) -> dict:
+  return {
+      "source_type": "aact",
+      "indication": indication,
+      "raw_snippet": (
+          f"Не знайдено клінічних випробувань у базі AACT для показання"
+          f" '{indication}'."
+      ),
+      "active_trials_count": 0,
+  }
