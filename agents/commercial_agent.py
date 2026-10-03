@@ -1,6 +1,5 @@
 """Commercial agent — competition, market size, unmet need.
-
-Owner: Комерційний аналітик. Sources: derived from AACT/Open Targets (competitors);
+Owner: Комерційний аналітик. Sources: derived from AACT/Open Targets (competitors);
 no allowed source covers market size/pricing/epidemiology directly, so most
 claims here are type "inference" with explicitly low confidence — that's
 expected, not a bug. Covers Required Output sections "competitive_landscape"

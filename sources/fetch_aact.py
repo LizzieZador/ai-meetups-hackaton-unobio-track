@@ -14,6 +14,7 @@ sources/cache.py, so a flaky live connection still doesn't risk a live demo.
 
 Owner: Клінічний аналітик (trial design) + Комерційний аналітик (competitors via sponsors).
 """
+import csv
 import datetime
 import os
 from pathlib import Path
@@ -130,3 +131,49 @@ def _fetch_flatfile(condition: str, intervention: str) -> Optional[list[dict]]:
         }]
     except (KeyError, ValueError):
         return None
+
+
+def get_competitors_from_aact(indication: str) -> Optional[dict]:
+    """Count active trials (competitors) for an indication from local AACT flat-files.
+
+    Returns None if the flat-files are missing; never raises on absent data.
+    """
+    conditions_file = AACT_DIR / "conditions.txt"
+    studies_file = AACT_DIR / "studies.txt"
+    if not conditions_file.exists() or not studies_file.exists():
+        return None
+
+    needle = indication.lower()
+    with open(conditions_file, encoding="utf-8") as f:
+        target_nct_ids = {
+            row.get("nct_id")
+            for row in csv.DictReader(f, delimiter="|")
+            if needle in (row.get("downcase_name") or "").lower()
+        }
+
+    active_trials_count = 0
+    phases_distribution: dict[str, int] = {}
+    if target_nct_ids:
+        with open(studies_file, encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="|"):
+                if row.get("nct_id") not in target_nct_ids:
+                    continue
+                status = (row.get("overall_status") or "").strip().lower()
+                is_active = any(k in status for k in ("recruit", "active", "enrolling")) and not any(
+                    k in status for k in ("completed", "terminated", "withdrawn")
+                )
+                if is_active:
+                    active_trials_count += 1
+                    phase = (row.get("phase") or "Unknown").strip()
+                    phases_distribution[phase] = phases_distribution.get(phase, 0) + 1
+
+    return {
+        "source_type": "aact",
+        "indication": indication,
+        "raw_snippet": (
+            f"{active_trials_count} active clinical trials found for indication "
+            f"'{indication}'. Phase distribution: {phases_distribution}"
+        ),
+        "active_trials_count": active_trials_count,
+        "phases_distribution": phases_distribution,
+    }
