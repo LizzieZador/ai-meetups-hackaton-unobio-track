@@ -24,6 +24,7 @@ from llm import get_usage_summary, reset_usage_log
 from report import render_report
 from schema import Claim
 from sources.fetch_aact import fetch_aact
+from sources.fetch_commercial import fetch_commercial
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_opentargets import fetch_opentargets
 from sources.fetch_pubmed import fetch_pubmed
@@ -32,7 +33,7 @@ REPORTS_DIR = Path(__file__).resolve().parent / "data" / "reports"
 
 
 def collect_sources(indication: str, mechanism: str) -> dict:
-    """Fetch raw snippets from all four sources.
+    """Fetch raw snippets from all five sources.
 
     Any source that fails (or returns None) becomes an empty list here — the
     pipeline keeps going with whatever evidence is actually available.
@@ -42,6 +43,7 @@ def collect_sources(indication: str, mechanism: str) -> dict:
         "opentargets": fetch_opentargets(mechanism, indication) or [],
         "clinicaltrials": fetch_clinicaltrials(indication, mechanism) or [],
         "aact": fetch_aact(indication, mechanism) or [],
+        "commercial": fetch_commercial(indication) or [],
     }
 
 
@@ -64,7 +66,7 @@ def run_pipeline(
         indication, mechanism, sources["clinicaltrials"] + sources["aact"], scientific_claims, extra_context
     )
     commercial_claims = commercial_agent(
-        indication, mechanism, sources["aact"] + sources["opentargets"], clinical_claims, extra_context
+        indication, mechanism, sources["aact"] + sources["opentargets"] + sources["commercial"], clinical_claims, extra_context
     )
     final_claims = chair_agent(
         indication, mechanism, scientific_claims, clinical_claims, commercial_claims
