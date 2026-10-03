@@ -5,10 +5,15 @@ AACT and the ClinicalTrials.gov API are one dataset in two forms: AACT is for
 aggregated queries ("all trials on target X"), the API is for one study's detail
 (see fetch_clinicaltrials.py).
 
-Prefers a live, read-only connection to the AACT public Postgres database
+get_competitors_from_aact() does the actual lookup and returns a raw analysis
+dict (active trial count + phase distribution); fetch_aact() wraps it into the
+pipeline's {source, url, date_accessed, raw_snippet} list shape — the same split
+as fetch_commercial.py's get_epidemiology_from_csv() / fetch_commercial().
+
+Tries a live, read-only connection to the AACT public Postgres database
 (aact-db.ctti-clinicaltrials.org) using credentials from the environment
-(AACT_DB_HOST/PORT/NAME/USER/PASSWORD — see .env.example). If those aren't set,
-or the live query fails for any reason, falls back to local static flat-files in
+(AACT_DB_HOST/PORT/NAME/USER/PASSWORD — see .env.example) first. If those
+aren't set, or the query fails, falls back to local static flat-files in
 data/aact/ (studies.txt / conditions.txt). Whichever succeeds first is cached by
 sources/cache.py, so a flaky live connection still doesn't risk a live demo.
 
@@ -24,25 +29,45 @@ from .cache import cached
 
 AACT_DIR = Path(__file__).resolve().parent.parent / "data" / "aact"
 
+ACTIVE_STATUS_KEYWORDS = ("recruit", "active", "enrolling")
+INACTIVE_STATUS_KEYWORDS = ("completed", "terminated", "withdrawn")
+
 
 def fetch_aact(condition: str, intervention: str) -> Optional[list[dict]]:
-    """Count competing trials for a condition/intervention pair from AACT.
-
-    Returns None if neither the live DB nor the local flat-files are available —
+    """Pipeline-shaped source: a list with one snippet dict, or None if AACT is
+    unreachable (neither the live DB nor the local flat-files are available) —
     caller must not crash the pipeline just because this source is unreachable.
     """
     key = f"{condition}__{intervention}"
-    return cached("aact", key, lambda: _fetch(condition, intervention))
+    return cached(
+        "aact", key, lambda: _to_pipeline_shape(get_competitors_from_aact(condition, intervention))
+    )
 
 
-def _fetch(condition: str, intervention: str) -> Optional[list[dict]]:
-    live = _fetch_live(condition, intervention)
+def _to_pipeline_shape(analysis: Optional[dict]) -> Optional[list[dict]]:
+    if analysis is None:
+        return None
+    return [{
+        "source": analysis["source"],
+        "url": "https://aact.ctti-clinicaltrials.org",
+        "date_accessed": analysis["date_accessed"],
+        "raw_snippet": analysis["raw_snippet"],
+    }]
+
+
+def get_competitors_from_aact(condition: str, intervention: str) -> Optional[dict]:
+    """Active trial count + phase distribution for a condition/intervention pair.
+
+    Tries the live DB first, then the local flat-file dump. Returns None if
+    neither source is available.
+    """
+    live = _query_live(condition, intervention)
     if live is not None:
         return live
-    return _fetch_flatfile(condition, intervention)
+    return _query_flatfile(condition, intervention)
 
 
-def _fetch_live(condition: str, intervention: str) -> Optional[list[dict]]:
+def _query_live(condition: str, intervention: str) -> Optional[dict]:
     host = os.environ.get("AACT_DB_HOST")
     if not host:
         return None
@@ -68,11 +93,11 @@ def _fetch_live(condition: str, intervention: str) -> Optional[list[dict]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT s.nct_id, s.brief_title, s.overall_status, s.phase
+                SELECT DISTINCT s.nct_id, s.overall_status, s.phase
                 FROM ctgov.studies s
                 JOIN ctgov.conditions c ON c.nct_id = s.nct_id
                 WHERE c.name ILIKE %s AND s.brief_title ILIKE %s
-                LIMIT 200
+                LIMIT 1000
                 """,
                 (f"%{condition}%", f"%{intervention}%"),
             )
@@ -82,97 +107,59 @@ def _fetch_live(condition: str, intervention: str) -> Optional[list[dict]]:
     finally:
         conn.close()
 
-    today = datetime.date.today().isoformat()
-    return [{
-        "source": "AACT live database (aact-db.ctti-clinicaltrials.org)",
-        "url": "https://aact.ctti-clinicaltrials.org",
-        "date_accessed": today,
-        "raw_snippet": (
-            f"{len(rows)} competing trials found for condition='{condition}', "
-            f"intervention='{intervention}'. Examples (nct_id, title, status, phase): "
-            f"{rows[:5]}"
-        ),
-    }]
+    return _summarize(rows, condition, "AACT live database (aact-db.ctti-clinicaltrials.org)")
 
 
-def _fetch_flatfile(condition: str, intervention: str) -> Optional[list[dict]]:
-    """Fallback: read studies.txt / conditions.txt downloaded into data/aact/."""
-    try:
-        import pandas as pd
-    except ImportError:
-        return None
-
-    studies_path = AACT_DIR / "studies.txt"
-    conditions_path = AACT_DIR / "conditions.txt"
-    if not studies_path.exists() or not conditions_path.exists():
-        return None
-
-    try:
-        studies = pd.read_csv(studies_path, sep="|", low_memory=False)
-        conditions = pd.read_csv(conditions_path, sep="|", low_memory=False)
-
-        matching_nct_ids = conditions[
-            conditions["name"].str.contains(condition, case=False, na=False)
-        ]["nct_id"].unique()
-        matched = studies[
-            studies["nct_id"].isin(matching_nct_ids)
-            & studies["brief_title"].str.contains(intervention, case=False, na=False)
-        ]
-
-        today = datetime.date.today().isoformat()
-        return [{
-            "source": "AACT flat-file dump",
-            "url": "https://aact.ctti-clinicaltrials.org",
-            "date_accessed": today,
-            "raw_snippet": (
-                f"{len(matched)} competing trials found for "
-                f"condition='{condition}', intervention='{intervention}'"
-            ),
-        }]
-    except (KeyError, ValueError):
-        return None
-
-
-def get_competitors_from_aact(indication: str) -> Optional[dict]:
-    """Count active trials (competitors) for an indication from local AACT flat-files.
-
-    Returns None if the flat-files are missing; never raises on absent data.
-    """
+def _query_flatfile(condition: str, intervention: str) -> Optional[dict]:
     conditions_file = AACT_DIR / "conditions.txt"
     studies_file = AACT_DIR / "studies.txt"
     if not conditions_file.exists() or not studies_file.exists():
         return None
 
-    needle = indication.lower()
-    with open(conditions_file, encoding="utf-8") as f:
-        target_nct_ids = {
-            row.get("nct_id")
-            for row in csv.DictReader(f, delimiter="|")
-            if needle in (row.get("downcase_name") or "").lower()
-        }
+    try:
+        target_nct_ids = set()
+        with open(conditions_file, mode="r", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="|"):
+                condition_name = row.get("downcase_name", "")
+                if condition_name and condition.lower() in condition_name.lower():
+                    target_nct_ids.add(row.get("nct_id"))
 
-    active_trials_count = 0
-    phases_distribution: dict[str, int] = {}
-    if target_nct_ids:
-        with open(studies_file, encoding="utf-8") as f:
+        if not target_nct_ids:
+            return _summarize([], condition, "AACT flat-file dump")
+
+        rows = []
+        with open(studies_file, mode="r", encoding="utf-8") as f:
             for row in csv.DictReader(f, delimiter="|"):
                 if row.get("nct_id") not in target_nct_ids:
                     continue
-                status = (row.get("overall_status") or "").strip().lower()
-                is_active = any(k in status for k in ("recruit", "active", "enrolling")) and not any(
-                    k in status for k in ("completed", "terminated", "withdrawn")
-                )
-                if is_active:
-                    active_trials_count += 1
-                    phase = (row.get("phase") or "Unknown").strip()
-                    phases_distribution[phase] = phases_distribution.get(phase, 0) + 1
+                brief_title = (row.get("brief_title") or "").lower()
+                if intervention.lower() in brief_title:
+                    rows.append((row.get("nct_id"), row.get("overall_status", ""), row.get("phase", "")))
+
+        return _summarize(rows, condition, "AACT flat-file dump")
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def _summarize(rows: list[tuple], condition: str, source: str) -> dict:
+    active_trials_count = 0
+    phases_distribution: dict[str, int] = {}
+    for _nct_id, status, phase in rows:
+        status = (status or "").strip().lower()
+        is_active = any(k in status for k in ACTIVE_STATUS_KEYWORDS) and not any(
+            k in status for k in INACTIVE_STATUS_KEYWORDS
+        )
+        if is_active:
+            active_trials_count += 1
+            phase_label = (phase or "Unknown").strip() or "Unknown"
+            phases_distribution[phase_label] = phases_distribution.get(phase_label, 0) + 1
 
     return {
-        "source_type": "aact",
-        "indication": indication,
+        "source": source,
+        "date_accessed": datetime.date.today().isoformat(),
         "raw_snippet": (
-            f"{active_trials_count} active clinical trials found for indication "
-            f"'{indication}'. Phase distribution: {phases_distribution}"
+            f"Знайдено {active_trials_count} активних клінічних випробувань за "
+            f"показанням '{condition}'. Розподіл за фазами: {phases_distribution}"
         ),
         "active_trials_count": active_trials_count,
         "phases_distribution": phases_distribution,
