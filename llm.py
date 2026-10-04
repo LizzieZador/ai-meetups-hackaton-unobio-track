@@ -2,14 +2,29 @@
 
 Every agent calls ask_claude_json() directly with its own system + user prompt.
 If GEMINI_API_KEY is present in the environment, it uses Google Gemini (free tier).
-Otherwise, it uses the Anthropic Claude API.
+Otherwise, it uses the Anthropic Claude API. If Gemini is set but fails entirely
+(e.g. free-tier quota exhausted) and a real ANTHROPIC_API_KEY is also present,
+falls back to Claude instead of failing the whole report.
+
+Responses are cached to disk by a hash of (system_prompt, user_prompt): the
+Gemini free tier caps at 20 requests/day *per model*, and one full pipeline run
+already uses 4 calls — re-running the same indication/mechanism pair during
+testing or a demo must not burn more of that budget.
 """
+import hashlib
 import json
 import os
+import time
+from pathlib import Path
+
 import requests
+
+CACHE_DIR = Path(__file__).resolve().parent / "cache"
+CACHE_DIR.mkdir(exist_ok=True)
 
 MODEL_ANTHROPIC = "claude-sonnet-5"
 MODEL_GEMINI = "gemini-3.5-flash"
+GEMINI_CANDIDATES = [MODEL_GEMINI, "gemini-3.8-flash"]  # tried in order
 
 # Approximate pricing per 1M tokens (USD)
 PRICE_ANTHROPIC_IN = 2.00
@@ -54,21 +69,65 @@ def get_usage_summary() -> dict:
     }
 
 
+def _salvage_objects(text: str) -> list[dict]:
+    """Recover complete {...} objects from a truncated JSON array (e.g. output cut by max tokens)."""
+    decoder, objs, i = json.JSONDecoder(), [], text.find("{")
+    while i != -1:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            objs.append(obj)
+        i = text.find("{", end)
+    return objs
+
+
+def _parse_claims_json(text: str) -> list[dict]:
+    """Tolerant parse of a model reply into a list of claim dicts ([] if unusable)."""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(text[text.index("["): text.rindex("]") + 1])
+        except (ValueError, json.JSONDecodeError):
+            return _salvage_objects(text)
+    if isinstance(parsed, list):
+        return [p for p in parsed if isinstance(p, dict)]
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("claims"), list):
+            return [p for p in parsed["claims"] if isinstance(p, dict)]
+        return [parsed]
+    return []
+
+
 def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
-    candidate_models = [MODEL_GEMINI, "gemini-3.8-flash"]
+    """Call Gemini, trying each candidate model; retry transient errors.
+
+    Raises RuntimeError if no model answered at all (bad key, quota, network) so the
+    UI can show the real cause instead of an empty report. A reply that arrives but
+    isn't usable JSON just yields [] (that agent contributes no claims).
+    """
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"parts": [{"text": user_prompt}]}],
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
         "generationConfig": {
-            "response_mime_type": "application/json",
+            "responseMimeType": "application/json",
             "maxOutputTokens": max_tokens,
         },
     }
+    headers = {"x-goog-api-key": api_key}  # header, not ?key=, so the key never lands in logs/errors
+    last_error = "no response"
 
-    for model in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        try:
-            resp = requests.post(url, json=payload, timeout=60)
+    for model in dict.fromkeys(GEMINI_CANDIDATES):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        for attempt in range(4):
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=90)
+            except requests.RequestException as e:
+                last_error = f"{model}: {e}"
+                time.sleep(1 + attempt)
+                continue
             if resp.status_code == 200:
                 data = resp.json()
                 usage = data.get("usageMetadata", {})
@@ -77,23 +136,28 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
                     "input_tokens": usage.get("promptTokenCount", 0),
                     "output_tokens": usage.get("candidatesTokenCount", 0),
                 })
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
                 try:
-                    parsed = json.loads(text)
-                    if isinstance(parsed, list):
-                        return parsed
-                    if isinstance(parsed, dict) and "claims" in parsed and isinstance(parsed["claims"], list):
-                        return parsed["claims"]
-                    return [parsed]
-                except (json.JSONDecodeError, KeyError):
-                    start, end = text.index("["), text.rindex("]") + 1
-                    return json.loads(text[start:end])
-            else:
-                print(f"[LLM Warning] {model} HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"[LLM Warning] {model} failed: {e}")
-            continue
-    return []
+                    cand = data["candidates"][0]
+                    # thinking models emit "thought" parts first; keep only the answer text
+                    text = "".join(p.get("text", "") for p in cand["content"]["parts"] if not p.get("thought"))
+                except (KeyError, IndexError):
+                    return []  # blocked / empty candidate
+                if cand.get("finishReason") not in (None, "STOP"):
+                    print(f"[LLM Warning] {model} finishReason={cand.get('finishReason')} usage={usage}")
+                return _parse_claims_json(text)
+            try:
+                detail = resp.json()["error"]["message"]
+            except (ValueError, KeyError, TypeError):
+                detail = resp.text[:200]
+            last_error = f"{model} HTTP {resp.status_code}: {detail}"
+            print(f"[LLM Warning] {last_error}")
+            if resp.status_code == 429 and "quota" in detail.lower():
+                break  # daily/free-tier quota: waiting is pointless, try the next model
+            if resp.status_code in (429, 500, 503):
+                time.sleep(3 * (attempt + 1))
+                continue
+            break  # 400/401/403/404: retrying the same model won't help
+    raise RuntimeError(f"Gemini request failed ({last_error})")
 
 
 def _ask_claude(system_prompt: str, user_prompt: str, max_tokens: int = 3000) -> list[dict]:
@@ -118,10 +182,53 @@ def _ask_claude(system_prompt: str, user_prompt: str, max_tokens: int = 3000) ->
         return []
 
 
-def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
-    """Unified entrypoint: calls Gemini if GEMINI_API_KEY is available, otherwise Claude."""
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if gemini_key:
-        return _ask_gemini(gemini_key, system_prompt, user_prompt, max_tokens)
-    return _ask_claude(system_prompt, user_prompt, max_tokens)
+def _real_key(name: str) -> str:
+    """Env key, ignoring empty values and the '...' placeholders from .env.example."""
+    value = os.environ.get(name, "").strip()
+    return "" if not value or value.endswith("...") else value
 
+
+def active_model() -> str:
+    """Name of the model ask_claude_json() will use right now (for UI/diagnostics)."""
+    return MODEL_GEMINI if (_real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY")) else MODEL_ANTHROPIC
+
+
+def _cache_path(system_prompt: str, user_prompt: str) -> Path:
+    digest = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8")).hexdigest()[:24]
+    return CACHE_DIR / f"llm_{digest}.json"
+
+
+def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
+    """Unified entrypoint: Gemini if GEMINI_API_KEY (or GOOGLE_API_KEY) is set, otherwise Claude.
+
+    Cached by a hash of the exact prompt pair — an identical call (same agent,
+    same indication/mechanism/sources) never spends quota or money twice.
+    """
+    cache_path = _cache_path(system_prompt, user_prompt)
+    if cache_path.exists():
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+
+    result = _ask(system_prompt, user_prompt, max_tokens)
+
+    if result:  # don't cache [] / failures — let the next call retry for real
+        cache_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _ask(system_prompt: str, user_prompt: str, max_tokens: int) -> list[dict]:
+    gemini_key = _real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY")
+    claude_key = _real_key("ANTHROPIC_API_KEY")
+
+    if gemini_key:
+        try:
+            return _ask_gemini(gemini_key, system_prompt, user_prompt, max_tokens)
+        except RuntimeError:
+            if not claude_key:
+                raise
+            # Gemini unreachable/quota-exhausted but a real Claude key exists too —
+            # fall back instead of failing the whole report.
+            return _ask_claude(system_prompt, user_prompt, max_tokens)
+
+    if not claude_key:
+        raise RuntimeError("No LLM key configured: set GEMINI_API_KEY (or ANTHROPIC_API_KEY) in .env")
+    return _ask_claude(system_prompt, user_prompt, max_tokens)
