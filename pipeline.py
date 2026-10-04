@@ -69,7 +69,12 @@ def run_pipeline(
         indication, mechanism, sources["aact"] + sources["opentargets"] + sources["commercial"], clinical_claims, extra_context
     )
     final_claims = chair_agent(
-        indication, mechanism, scientific_claims, clinical_claims, commercial_claims
+        indication,
+        mechanism,
+        scientific_claims,
+        clinical_claims,
+        commercial_claims,
+        extra_context=extra_context,
     )
 
     cost_summary = get_usage_summary()
