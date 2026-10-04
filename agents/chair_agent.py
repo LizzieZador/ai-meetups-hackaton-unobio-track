@@ -73,14 +73,18 @@ def chair_agent(
             c.confidence = "medium"
         if not c.reasoning:
             c.reasoning = "Committee synthesis based on analyst evidence."
-        # Нормалізація вердикту
+        # Нормалізація вердикту (ВАЖЛИВО: перевіряти "Do Not Invest" ПЕРЕД "Invest")
         if c.section == "recommendation":
-            cleaned_claim = c.claim.strip()
-            for v in VALID_VERDICTS:
-                if v.lower() in cleaned_claim.lower():
-                    c.claim = v
-                    has_valid_verdict = True
-                    break
+            claim_lower = c.claim.strip().lower()
+            if "do not invest" in claim_lower or "don't invest" in claim_lower or "reject" in claim_lower:
+                c.claim = "Do Not Invest"
+                has_valid_verdict = True
+            elif "conditional" in claim_lower:
+                c.claim = "Conditional"
+                has_valid_verdict = True
+            elif "invest" in claim_lower:
+                c.claim = "Invest"
+                has_valid_verdict = True
         sanitized_synthesis.append(c)
     # Страховка на випадок збою: гарантуємо наявність чіткого вердикту
     if not has_valid_verdict:
@@ -132,4 +136,4 @@ def _enforce_risk_override_guardrail(claims: list[Claim]) -> None:
                 f"and high impact on rNPV. The committee downgraded the verdict from Invest to Conditional "
                 f"because this critical risk was not explicitly mitigated. "
                 + (verdict_claim.reasoning or "")
-            )
+            )
