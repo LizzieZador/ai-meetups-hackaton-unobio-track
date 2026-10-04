@@ -1,32 +1,32 @@
-"""Thin wrapper around the Claude API.
+"""LLM wrapper supporting both Gemini API and Claude API.
 
-Deliberately NOT using LangChain/CrewAI/LangGraph (see plan) — every agent calls
-this one function directly with its own system + user prompt.
-
-Also tracks token usage so the pipeline can report "approximate cost per
-underwriting run" — a named Required Deliverable in the task brief.
+Every agent calls ask_claude_json() directly with its own system + user prompt.
+If GEMINI_API_KEY is present in the environment, it uses Google Gemini (free tier).
+Otherwise, it uses the Anthropic Claude API.
 """
 import json
 import os
+import requests
 
-import anthropic
+MODEL_ANTHROPIC = "claude-sonnet-5"
+MODEL_GEMINI = "gemini-3.5-flash"
 
-MODEL = "claude-sonnet-5"
+# Approximate pricing per 1M tokens (USD)
+PRICE_ANTHROPIC_IN = 2.00
+PRICE_ANTHROPIC_OUT = 10.00
+PRICE_GEMINI_IN = 0.075
+PRICE_GEMINI_OUT = 0.30
 
-# Anthropic first-party list pricing, USD per million tokens. Update if the
-# model or its pricing changes — this is an estimate, not a billing record.
-PRICE_PER_MTOK_INPUT = 2.00
-PRICE_PER_MTOK_OUTPUT = 10.00
-
-_client: anthropic.Anthropic | None = None
+_anthropic_client = None
 _usage_log: list[dict] = []
 
 
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    return _client
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    return _anthropic_client
 
 
 def reset_usage_log() -> None:
@@ -36,14 +36,17 @@ def reset_usage_log() -> None:
 
 def get_usage_summary() -> dict:
     """Aggregate token usage + approximate USD cost for every call since the last reset."""
-    input_tokens = sum(u["input_tokens"] for u in _usage_log)
-    output_tokens = sum(u["output_tokens"] for u in _usage_log)
-    cost = (
-        (input_tokens / 1_000_000) * PRICE_PER_MTOK_INPUT
-        + (output_tokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT
-    )
+    input_tokens = sum(u.get("input_tokens", 0) for u in _usage_log)
+    output_tokens = sum(u.get("output_tokens", 0) for u in _usage_log)
+    model = _usage_log[0]["model"] if _usage_log else "unknown"
+
+    if "gemini" in model.lower():
+        cost = (input_tokens / 1_000_000) * PRICE_GEMINI_IN + (output_tokens / 1_000_000) * PRICE_GEMINI_OUT
+    else:
+        cost = (input_tokens / 1_000_000) * PRICE_ANTHROPIC_IN + (output_tokens / 1_000_000) * PRICE_ANTHROPIC_OUT
+
     return {
-        "model": MODEL,
+        "model": model,
         "calls": len(_usage_log),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -51,19 +54,58 @@ def get_usage_summary() -> dict:
     }
 
 
-def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> list[dict]:
-    """Call Claude and parse the reply as a JSON array of claim dicts.
+def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
+    candidate_models = [MODEL_GEMINI, "gemini-3.8-flash"]
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"parts": [{"text": user_prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "maxOutputTokens": max_tokens,
+        },
+    }
 
-    Returns [] if the model didn't return valid JSON — a bad LLM reply must never
-    crash the pipeline, it just means that agent contributes no claims this round.
-    """
-    response = _get_client().messages.create(
-        model=MODEL,
+    for model in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        try:
+            resp = requests.post(url, json=payload, timeout=60)
+            if resp.status_code == 200:
+                data = resp.json()
+                usage = data.get("usageMetadata", {})
+                _usage_log.append({
+                    "model": model,
+                    "input_tokens": usage.get("promptTokenCount", 0),
+                    "output_tokens": usage.get("candidatesTokenCount", 0),
+                })
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict) and "claims" in parsed and isinstance(parsed["claims"], list):
+                        return parsed["claims"]
+                    return [parsed]
+                except (json.JSONDecodeError, KeyError):
+                    start, end = text.index("["), text.rindex("]") + 1
+                    return json.loads(text[start:end])
+            else:
+                print(f"[LLM Warning] {model} HTTP {resp.status_code}: {resp.text[:150]}")
+        except Exception as e:
+            print(f"[LLM Warning] {model} failed: {e}")
+            continue
+    return []
+
+
+def _ask_claude(system_prompt: str, user_prompt: str, max_tokens: int = 3000) -> list[dict]:
+    client = _get_anthropic_client()
+    response = client.messages.create(
+        model=MODEL_ANTHROPIC,
         max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
     _usage_log.append({
+        "model": MODEL_ANTHROPIC,
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
     })
@@ -74,3 +116,12 @@ def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 2000
         return json.loads(text[start:end])
     except (ValueError, json.JSONDecodeError):
         return []
+
+
+def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
+    """Unified entrypoint: calls Gemini if GEMINI_API_KEY is available, otherwise Claude."""
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        return _ask_gemini(gemini_key, system_prompt, user_prompt, max_tokens)
+    return _ask_claude(system_prompt, user_prompt, max_tokens)
+
