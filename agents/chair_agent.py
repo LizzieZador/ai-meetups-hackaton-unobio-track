@@ -93,4 +93,43 @@ def chair_agent(
                 confidence="low",
             )
         )
+
+    # Програмне забезпечення правила: High Risk Override
+    _enforce_risk_override_guardrail(sanitized_synthesis)
+
     return all_claims + sanitized_synthesis
+
+
+def _enforce_risk_override_guardrail(claims: list[Claim]) -> None:
+    """Гарантує виконання правила ТЗ: якщо топ-ризик має високу ймовірність і високий вплив,
+    вердикт не може бути 'Invest' без прямої згадки цього ризику в reasoning."""
+    key_risks = [c for c in claims if c.section == "key_risks"]
+    verdict_claim = next((c for c in claims if c.section == "recommendation" and c.claim in VALID_VERDICTS), None)
+
+    if not key_risks or not verdict_claim or verdict_claim.claim != "Invest":
+        return
+
+    top_risk = key_risks[0]
+    risk_text = f"{top_risk.claim} {top_risk.reasoning or ''}".lower()
+
+    # Детекція високої ймовірності та високого впливу
+    high_prob_markers = ("high prob", "probability: high", "ймовірність: висок", ">50%", "60%", "70%", "80%")
+    high_impact_markers = ("high impact", "вплив: висок", "critical", "severe", "termination", "zero sales")
+
+    has_high_prob = any(m in risk_text for m in high_prob_markers)
+    has_high_impact = any(m in risk_text for m in high_impact_markers)
+
+    if has_high_prob and has_high_impact:
+        reasoning_lower = (verdict_claim.reasoning or "").lower()
+        # Перевіряємо, чи ключові слова з опису ризику згадані у вердикті
+        risk_words = [w for w in top_risk.claim.lower().split() if len(w) > 4]
+        is_explicitly_addressed = any(w in reasoning_lower for w in risk_words)
+
+        if not is_explicitly_addressed:
+            verdict_claim.claim = "Conditional"
+            verdict_claim.reasoning = (
+                f"[Rule Enforcement: High Risk Override] Top risk ('{top_risk.claim}') has both high probability "
+                f"and high impact on rNPV. The committee downgraded the verdict from Invest to Conditional "
+                f"because this critical risk was not explicitly mitigated. "
+                + (verdict_claim.reasoning or "")
+            )
