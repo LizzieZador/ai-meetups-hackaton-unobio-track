@@ -124,6 +124,8 @@ unknowns, diligence questions) і ніколи не перетворює `infere
 pip install -r requirements.txt
 cp .env.example .env   # вписати ANTHROPIC_API_KEY (+ опційно AACT_DB_* для живої БД)
 streamlit run app.py
+# або веб-UI з боковою панеллю пошуків і картками звіту (server.py + web/):
+python server.py   # http://127.0.0.1:5000
 # або без UI:
 python main.py "non-small cell lung cancer" "KRAS G12C inhibitor"
 python main.py "non-small cell lung cancer" "KRAS G12C inhibitor" "oral, Phase 1 ongoing"

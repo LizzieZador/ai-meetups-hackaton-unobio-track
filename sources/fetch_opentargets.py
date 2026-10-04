@@ -23,7 +23,9 @@ ASSOCIATION_QUERY = """
 query targetDisease($targetId: String!, $diseaseId: String!) {
   target(ensemblId: $targetId) {
     approvedSymbol
-    knownDrugs { rows { drug { name } phase } }
+    drugAndClinicalCandidates {
+      rows { maxClinicalStage drug { name } }
+    }
   }
   disease(efoId: $diseaseId) {
     name
@@ -57,12 +59,15 @@ def _fetch(mechanism: str, indication: str) -> Optional[list[dict]]:
             timeout=15,
         )
         resp.raise_for_status()
-        data = resp.json()["data"]
+        body = resp.json()
+        if body.get("errors"):
+            return None
+        data = body["data"]
         today = datetime.date.today().isoformat()
 
         target = data.get("target") or {}
         disease = data.get("disease") or {}
-        known_drugs = (target.get("knownDrugs") or {}).get("rows", [])
+        known_drugs = (target.get("drugAndClinicalCandidates") or {}).get("rows", [])
         drug_names = [d["drug"]["name"] for d in known_drugs if d.get("drug")]
 
         return [{
@@ -81,7 +86,10 @@ def _fetch(mechanism: str, indication: str) -> Optional[list[dict]]:
 def _resolve_id(term: str, entity: str) -> Optional[str]:
     resp = requests.post(API_URL, json={"query": SEARCH_QUERY, "variables": {"q": term}}, timeout=15)
     resp.raise_for_status()
-    hits = resp.json()["data"]["search"]["hits"]
+    body = resp.json()
+    if body.get("errors"):
+        return None
+    hits = body["data"]["search"]["hits"]
     for hit in hits:
         if hit["entity"] == entity:
             return hit["id"]

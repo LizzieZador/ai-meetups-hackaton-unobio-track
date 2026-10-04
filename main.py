@@ -14,7 +14,11 @@ def main() -> None:
 
     indication, mechanism = sys.argv[1], sys.argv[2]
     extra_context = sys.argv[3] if len(sys.argv) == 4 else ""
-    report = run_pipeline_markdown(indication, mechanism, extra_context)
+    try:
+        report = run_pipeline_markdown(indication, mechanism, extra_context)
+    except Exception as e:
+        print(f"Pipeline failed: {e}")
+        sys.exit(1)
     print(report)
 
 

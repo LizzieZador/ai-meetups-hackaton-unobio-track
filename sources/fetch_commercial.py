@@ -65,6 +65,7 @@ def run_commercial_analysis(indication: str, target: str) -> Optional[dict]:
                 f"incidence {row['Incidence_Annual_US_EU']} in US+EU."
             ),
             "type": "evidence",
+            "section": "commercial_opportunity",
             "source": row["Primary_Epidemiology_Source"],
             "date_accessed": today,
         }],

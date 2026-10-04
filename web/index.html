@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Biotech Investment Committee</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="side-head">
+      <span>Searches</span>
+      <button id="toggle-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar">&#x25C0;</button>
+    </div>
+    <ul id="history"></ul>
+  </aside>
+  <main>
+    <form id="search" class="topbar">
+      <button type="button" id="open-sidebar" class="hidden" aria-label="Open sidebar">&#x25B6;</button>
+      <input id="query" type="text" placeholder="Drug, indication or mechanism" autocomplete="off">
+      <button id="evaluate" type="submit" disabled>Evaluate</button>
+    </form>
+    <section id="content"><p class="empty">Search a drug, an indication or a mechanism to build an evaluation.</p></section>
+  </main>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head"><strong id="modal-title">Sources</strong><button id="modal-close" aria-label="Close">&times;</button></div>
+      <ul id="modal-list"></ul>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
