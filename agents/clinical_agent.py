@@ -43,6 +43,7 @@ def clinical_agent(
     sources: list[dict],
     scientific_claims: list[Claim],
     extra_context: str = "",
+    valid_sources: set | None = None,
 ) -> list[Claim]:
     user_prompt = (
         f"Indication: {indication}\n"
@@ -52,4 +53,4 @@ def clinical_agent(
         f"Sources:\n{sources}"
     )
     raw = ask_claude_json(SYSTEM_PROMPT, user_prompt)
-    return parse_claims(raw)
+    return parse_claims(raw, valid_sources)

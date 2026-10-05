@@ -60,8 +60,8 @@ class Claim:
     def validate(self) -> None:
         if self.section not in SECTION_TITLES:
             raise ValueError(f"unknown section {self.section!r} for claim: {self.claim!r}")
-        if self.type == "evidence" and not self.source:
-            raise ValueError(f"evidence claim without a source: {self.claim!r}")
+        if self.type == "evidence" and not isinstance(self.source, str):
+            raise ValueError(f"evidence claim without a string source: {self.claim!r}")
         if self.type == "inference" and not (self.reasoning and self.confidence):
             raise ValueError(f"inference claim without reasoning/confidence: {self.claim!r}")
 
@@ -69,12 +69,20 @@ class Claim:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
-def parse_claims(raw: list[dict]) -> list[Claim]:
+def parse_claims(raw: list[dict], valid_sources: Optional[set] = None) -> list[Claim]:
     """Parse + validate claim dicts coming back from an LLM call.
 
     An LLM is never trusted to self-police its own evidence/inference labeling —
     anything that fails validation (e.g. type=evidence with no source) is dropped
     here, in code, rather than rendered into the report.
+
+    When `valid_sources` is given (the exact `source` strings of every item we
+    actually fetched this run — see pipeline.collect_valid_sources()), every
+    evidence claim's `source` must match one of them (substring match, since the
+    LLM sometimes echoes a source slightly reformatted). An evidence claim citing
+    a source we never fetched is a hallucinated citation and is dropped — the
+    model is instructed to copy sources verbatim, but that instruction is never
+    trusted on its own.
     """
     claims = []
     for item in raw:
@@ -83,5 +91,20 @@ def parse_claims(raw: list[dict]) -> list[Claim]:
             c.validate()
         except (TypeError, ValueError):
             continue
+        if (
+            valid_sources is not None
+            and c.type == "evidence"
+            and not _source_is_grounded(c.source, valid_sources)
+        ):
+            continue
         claims.append(c)
     return claims
+
+
+def _source_is_grounded(source: Optional[str], valid_sources: set) -> bool:
+    # The LLM occasionally returns a non-string "source" (e.g. a list of
+    # sources for one claim) — treat anything that isn't a plain string as
+    # ungrounded rather than crashing the whole agent call on it.
+    if not isinstance(source, str) or not source:
+        return False
+    return any(source in v or v in source for v in valid_sources)

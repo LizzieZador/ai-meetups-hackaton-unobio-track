@@ -40,6 +40,29 @@ function renderClaim(c) {
   return `<div class="claim">${badge}${esc(c.claim)}${meta}</div>`;
 }
 
+function renderRawRecord(rec) {
+  const url = safeUrl(rec.url);
+  const src = url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(rec.source)}</a>` : esc(rec.source);
+  return `<div class="claim">${src}<span class="meta">${esc(rec.raw_snippet || "")}</span></div>`;
+}
+
+function renderRawData(rawData, analogs) {
+  const cards = (rawData || []).map((s) => `
+    <article class="card raw">
+      <h2>${esc(s.title)}</h2>
+      <div class="sub">${s.records.length} record(s)</div>
+      <div class="claims">${s.records.length ? s.records.map(renderRawRecord).join("") : '<p class="sub">No data returned by this source for this query.</p>'}</div>
+    </article>`).join("");
+  const analogItems = (analogs || []).length
+    ? analogs.map((d) => `<div class="claim">${esc(d.name)}<span class="meta">${esc(d.stage || "stage unknown")}</span></div>`).join("")
+    : '<p class="sub">No known competing drugs on this target were found in Open Targets.</p>';
+  return `
+    <h2 class="block-title">Raw source data <span class="sub">(no LLM — pulled directly from the connected databases)</span></h2>
+    <div class="grid">${cards}</div>
+    <h2 class="block-title">Analogs / competing drugs</h2>
+    <article class="card raw"><div class="claims">${analogItems}</div></article>`;
+}
+
 function renderReport(r) {
   const vClass = r.verdict === "Do Not Invest" ? "no" : r.verdict === "Conditional" ? "cond" : "";
   const cards = r.sections.map((s) => `
@@ -54,6 +77,8 @@ function renderReport(r) {
   $("content").innerHTML = `
     <div class="report-head"><h1>${esc(r.query)}</h1><span>Evaluation</span>
       ${r.verdict ? `<span class="verdict ${vClass}">${esc(r.verdict)}</span>` : ""}</div>
+    ${renderRawData(r.raw_data, r.analogs)}
+    <h2 class="block-title">Committee verdict <span class="sub">(LLM analysis of the data above)</span></h2>
     <div class="grid">${cards}</div>
     <p class="cost">~$${esc(c.approx_cost_usd)} · ${esc(c.calls)} calls · ${esc(c.model)}</p>`;
   $("content").querySelectorAll("footer button").forEach((b) => {

@@ -39,7 +39,11 @@ Return ONLY the JSON array, nothing else.
 
 
 def scientific_agent(
-    indication: str, mechanism: str, sources: list[dict], extra_context: str = ""
+    indication: str,
+    mechanism: str,
+    sources: list[dict],
+    extra_context: str = "",
+    valid_sources: set | None = None,
 ) -> list[Claim]:
     user_prompt = (
         f"Indication: {indication}\n"
@@ -48,4 +52,4 @@ def scientific_agent(
         + f"\nSources:\n{sources}"
     )
     raw = ask_claude_json(SYSTEM_PROMPT, user_prompt)
-    return parse_claims(raw)
+    return parse_claims(raw, valid_sources)

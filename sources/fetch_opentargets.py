@@ -69,6 +69,13 @@ def _fetch(mechanism: str, indication: str) -> Optional[list[dict]]:
         disease = data.get("disease") or {}
         known_drugs = (target.get("drugAndClinicalCandidates") or {}).get("rows", [])
         drug_names = [d["drug"]["name"] for d in known_drugs if d.get("drug")]
+        # Structured analogs list (name + stage) for direct, non-LLM display —
+        # raw_snippet below carries the same info as text for the agent prompt.
+        analogs = [
+            {"name": d["drug"]["name"], "stage": d.get("maxClinicalStage")}
+            for d in known_drugs
+            if d.get("drug")
+        ]
 
         return [{
             "source": f"Open Targets {target_id}-{disease_id}",
@@ -78,6 +85,7 @@ def _fetch(mechanism: str, indication: str) -> Optional[list[dict]]:
                 f"Target {target.get('approvedSymbol')} vs {disease.get('name')}; "
                 f"known drugs on this target: {drug_names}"
             ),
+            "known_drugs": analogs,
         }]
     except (requests.RequestException, KeyError, TypeError):
         return None

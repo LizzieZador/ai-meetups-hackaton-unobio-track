@@ -121,12 +121,12 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
 
     for model in dict.fromkeys(GEMINI_CANDIDATES):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        for attempt in range(4):
+        for attempt in range(2):
             try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=90)
+                resp = requests.post(url, json=payload, headers=headers, timeout=30)
             except requests.RequestException as e:
                 last_error = f"{model}: {e}"
-                time.sleep(1 + attempt)
+                time.sleep(2)
                 continue
             if resp.status_code == 200:
                 data = resp.json()
@@ -154,7 +154,7 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
             if resp.status_code == 429 and "quota" in detail.lower():
                 break  # daily/free-tier quota: waiting is pointless, try the next model
             if resp.status_code in (429, 500, 503):
-                time.sleep(3 * (attempt + 1))
+                time.sleep(2)
                 continue
             break  # 400/401/403/404: retrying the same model won't help
     raise RuntimeError(f"Gemini request failed ({last_error})")

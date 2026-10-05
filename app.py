@@ -7,6 +7,7 @@ instead of reading one flat block of markdown.
 import streamlit as st
 
 from pipeline import run_pipeline
+from raw_data import SOURCE_ORDER, SOURCE_TITLES, extract_analogs
 from schema import SECTION_TITLES
 
 VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
@@ -30,10 +31,31 @@ if submitted:
     else:
         with st.spinner("Collecting sources and running the committee..."):
             try:
-                claims, cost_summary = run_pipeline(indication, mechanism, extra_context)
+                claims, cost_summary, sources = run_pipeline(indication, mechanism, extra_context)
             except Exception as e:
                 st.error(f"Pipeline failed: {e}")
                 st.stop()
+
+        st.subheader("Raw source data (no LLM — pulled directly from the connected databases)")
+        for key in SOURCE_ORDER:
+            items = sources.get(key, [])
+            with st.expander(f"{SOURCE_TITLES[key]} — {len(items)} record(s)"):
+                if not items:
+                    st.write("_No data returned by this source for this query._")
+                for item in items:
+                    link = f"[{item['source']}]({item.get('url')})" if item.get("url") else item["source"]
+                    st.markdown(f"**{link}** (accessed {item.get('date_accessed')})")
+                    st.caption(item.get("raw_snippet", ""))
+
+        analogs = extract_analogs(sources)
+        with st.expander(f"Analogs / competing drugs — {len(analogs)}"):
+            if not analogs:
+                st.write("_No known competing drugs on this target were found in Open Targets._")
+            for drug in analogs:
+                st.markdown(f"- **{drug['name']}** — {drug.get('stage') or 'stage unknown'}")
+
+        st.divider()
+        st.subheader("Committee verdict (LLM analysis of the data above)")
 
         by_section: dict[str, list] = {}
         for c in claims:
@@ -45,7 +67,6 @@ if submitted:
         for c in recommendation_claims:
             st.markdown(f"- **{c.claim}** — {c.reasoning} _(confidence: {c.confidence})_")
 
-        st.divider()
         st.subheader("Claims by section")
         for section, title in SECTION_TITLES.items():
             if section == "recommendation":

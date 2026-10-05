@@ -23,7 +23,10 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .report-head .verdict { padding:3px 12px; border-radius:99px; font-weight:600; font-size:14px; background:var(--tint); color:var(--blue); }
 .report-head .verdict.no { background:#fdecea; color:var(--red); }
 .report-head .verdict.cond { background:#fff3e0; color:var(--amber); }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr)); gap:32px; align-items:start; }
+.block-title { font-size:16px; font-weight:600; margin:28px 0 14px; }
+.block-title .sub { display:block; font-weight:400; font-size:13px; color:var(--muted); margin-top:2px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr)); gap:32px; align-items:start; margin-bottom:8px; }
+.card.raw h2 { font-size:15px; }
 .card { background:var(--card); border-radius:8px; padding:20px 22px; box-shadow:0 1px 2px rgba(0,0,0,.04); display:flex; flex-direction:column; }
 .card h2 { margin:0; font-size:18px; font-weight:600; }
 .card h2 .n { color:var(--muted); margin-right:8px; font-weight:500; }
