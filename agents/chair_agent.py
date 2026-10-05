@@ -28,6 +28,7 @@ CRITICAL RULES:
    - "diligence_questions": 5 to 10 highest-value diligence questions. For each, reasoning MUST specify what non-public data is required (e.g. proprietary assays, patient-level data, KOL interviews, CMC audit).
    - "recommendation": Must include:
      a) One claim estimating the simplified rNPV range: rNPV ~= (PTRS x Peak Sales) - Capital Required (Low / Base / High scenarios).
+   IMPORTANT: Explicitly extract the PTRS percentage estimated by the Clinical Analyst and the Peak Sales figure estimated by the Commercial Analyst. Do not invent contradictory baseline numbers.
      b) One claim explaining whether the mechanism solves a major unmet need if it works.
      c) EXACTLY ONE final verdict claim where the "claim" field is EXACTLY one of these three strings: "Invest", "Conditional", or "Do Not Invest".
 3. CONTRADICTIONS & RISK OVERRIDE:
