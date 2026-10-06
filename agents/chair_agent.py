@@ -59,7 +59,7 @@ def chair_agent(
         f"{json.dumps(structured_input, indent=2, ensure_ascii=False)}"
     )
     # 4000 токенів гарантують, що 5 секцій не обірвуться посеред валідації JSON
-    raw = ask_claude_json(SYSTEM_PROMPT, user_prompt, max_tokens=4000)
+    raw = ask_claude_json(SYSTEM_PROMPT, user_prompt, max_tokens=8000)
     parsed = parse_claims(raw)
     # Програмна санітизація та захист (Code Enforcement)
     sanitized_synthesis: list[Claim] = []

@@ -1,8 +1,10 @@
 """Web UI backend — serves the static front-end in web/ and exposes the pipeline as JSON.
 
-GET  /              -> web/index.html (search sidebar + report cards)
-POST /api/evaluate  -> {"query": "..."} -> structured report (sections, claims, sources)
+GET  /              -> web/index.html (search sidebar + the 12-card grid)
+POST /api/evaluate  -> {"query": "..."} -> {verdict, verdict_claims, cards, cost}
 
+Card layout and the mapping from claim sections / fetched sources onto cards
+lives in cards.py; this module only turns a query into one pipeline run.
 The Streamlit app (app.py) stays as an alternative UI; both call run_pipeline().
 Run: python server.py  (http://127.0.0.1:5000)
 """
@@ -11,25 +13,13 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+from cards import build_cards, build_verdict_claims
 from pipeline import run_pipeline
-from raw_data import build_raw_data_payload, extract_analogs
-from schema import SECTION_TITLES, Claim
+from raw_data import extract_analogs
+from schema import Claim
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
-
-SECTION_SUBTITLES = {
-    "recommendation": "Committee verdict and rationale",
-    "scientific_thesis": "PubMed, Open Targets",
-    "human_translation_thesis": "PubMed, Open Targets, genetics",
-    "clinical_development_plan": "ClinicalTrials.gov, AACT",
-    "competitive_landscape": "Approved products and late-stage pipeline",
-    "commercial_opportunity": "Epidemiology, market data, treatment patterns",
-    "capital_required": "Budget to the next major milestone",
-    "key_risks": "Failure modes and what could go wrong",
-    "critical_unknowns": "What the evidence does not tell us",
-    "diligence_questions": "Questions to resolve before committing capital",
-}
 
 app = Flask(__name__, static_folder=None)
 
@@ -47,36 +37,18 @@ def split_query(query: str) -> tuple[str, str]:
 
 
 def build_report(query: str, claims: list[Claim], cost: dict, sources: dict) -> dict:
-    by_section: dict[str, list[Claim]] = {}
-    for c in claims:
-        by_section.setdefault(c.section, []).append(c)
-
     verdict = next(
-        (c.claim for c in by_section.get("recommendation", []) if c.claim in VERDICTS), None
+        (c.claim for c in claims if c.section == "recommendation" and c.claim in VERDICTS), None
     )
-    sections = []
-    for i, (sid, title) in enumerate(SECTION_TITLES.items(), start=1):
-        items = by_section.get(sid, [])
-        seen, section_sources = set(), []
-        for c in items:
-            if c.type == "evidence" and c.source and (c.source, c.url) not in seen:
-                seen.add((c.source, c.url))
-                section_sources.append({"source": c.source, "url": c.url, "date_accessed": c.date_accessed})
-        sections.append({
-            "id": sid,
-            "number": i,
-            "title": title,
-            "subtitle": SECTION_SUBTITLES.get(sid, ""),
-            "claims": [c.to_dict() for c in items if not (sid == "recommendation" and c.claim in VERDICTS)],
-            "sources": section_sources,
-        })
+    # The bare verdict word is already shown as the header chip — drop it from the
+    # list below so it isn't repeated without its reasoning.
+    verdict_claims = [c for c in build_verdict_claims(claims) if c.get("claim") not in VERDICTS]
     return {
         "query": query,
         "verdict": verdict,
-        "sections": sections,
+        "verdict_claims": verdict_claims,
+        "cards": build_cards(claims, sources, extract_analogs(sources)),
         "cost": cost,
-        "raw_data": build_raw_data_payload(sources),
-        "analogs": extract_analogs(sources),
     }
 
 

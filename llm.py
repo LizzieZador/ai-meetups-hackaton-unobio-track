@@ -25,6 +25,8 @@ CACHE_DIR.mkdir(exist_ok=True)
 MODEL_ANTHROPIC = "claude-sonnet-5"
 MODEL_GEMINI = "gemini-3.5-flash"
 GEMINI_CANDIDATES = [MODEL_GEMINI, "gemini-3.8-flash"]  # tried in order
+GEMINI_THINKING_BUDGET = 2000  # see _ask_gemini: a hint to the model, not a hard cap
+GEMINI_MAX_ATTEMPTS = 4  # per model, for transient 429/500/503 only
 
 # Approximate pricing per 1M tokens (USD)
 PRICE_ANTHROPIC_IN = 2.00
@@ -101,12 +103,18 @@ def _parse_claims_json(text: str) -> list[dict]:
     return []
 
 
-def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
+def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> list[dict]:
     """Call Gemini, trying each candidate model; retry transient errors.
 
     Raises RuntimeError if no model answered at all (bad key, quota, network) so the
     UI can show the real cause instead of an empty report. A reply that arrives but
     isn't usable JSON just yields [] (that agent contributes no claims).
+
+    maxOutputTokens is spent on the model's own thinking before any answer is
+    written, and on these prompts thinking alone runs to ~4k tokens — at a 4000
+    budget every agent reply came back truncated mid-claim. Hence the high
+    ceiling plus a thinking budget (a hint, not a hard cap: the model may and
+    does overshoot it, so the ceiling is what actually protects the answer).
     """
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -114,6 +122,7 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
         "generationConfig": {
             "responseMimeType": "application/json",
             "maxOutputTokens": max_tokens,
+            "thinkingConfig": {"thinkingBudget": GEMINI_THINKING_BUDGET},
         },
     }
     headers = {"x-goog-api-key": api_key}  # header, not ?key=, so the key never lands in logs/errors
@@ -121,12 +130,12 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
 
     for model in dict.fromkeys(GEMINI_CANDIDATES):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        for attempt in range(2):
+        for attempt in range(GEMINI_MAX_ATTEMPTS):
             try:
                 resp = requests.post(url, json=payload, headers=headers, timeout=30)
             except requests.RequestException as e:
                 last_error = f"{model}: {e}"
-                time.sleep(2)
+                time.sleep(2 * (attempt + 1))
                 continue
             if resp.status_code == 200:
                 data = resp.json()
@@ -134,7 +143,8 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
                 _usage_log.append({
                     "model": model,
                     "input_tokens": usage.get("promptTokenCount", 0),
-                    "output_tokens": usage.get("candidatesTokenCount", 0),
+                    # thoughts are billed as output tokens but counted separately
+                    "output_tokens": usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0),
                 })
                 try:
                     cand = data["candidates"][0]
@@ -154,7 +164,9 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
             if resp.status_code == 429 and "quota" in detail.lower():
                 break  # daily/free-tier quota: waiting is pointless, try the next model
             if resp.status_code in (429, 500, 503):
-                time.sleep(2)
+                # 503 ("high demand") is routinely the free tier's answer and clears
+                # on its own; back off increasingly rather than giving the agent up.
+                time.sleep(3 * (attempt + 1))
                 continue
             break  # 400/401/403/404: retrying the same model won't help
     raise RuntimeError(f"Gemini request failed ({last_error})")
@@ -198,7 +210,7 @@ def _cache_path(system_prompt: str, user_prompt: str) -> Path:
     return CACHE_DIR / f"llm_{digest}.json"
 
 
-def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 4000) -> list[dict]:
+def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> list[dict]:
     """Unified entrypoint: Gemini if GEMINI_API_KEY (or GOOGLE_API_KEY) is set, otherwise Claude.
 
     Cached by a hash of the exact prompt pair — an identical call (same agent,

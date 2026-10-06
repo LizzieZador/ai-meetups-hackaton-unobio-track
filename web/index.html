@@ -10,23 +10,33 @@
   <aside id="sidebar">
     <div class="side-head">
       <span>Searches</span>
-      <button id="toggle-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar">&#x25C0;</button>
+      <button id="toggle-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+          <rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor"/>
+          <line x1="8" y1="3.5" x2="8" y2="16.5" stroke="currentColor"/>
+        </svg>
+      </button>
     </div>
     <ul id="history"></ul>
   </aside>
   <main>
     <form id="search" class="topbar">
-      <button type="button" id="open-sidebar" class="hidden" aria-label="Open sidebar">&#x25B6;</button>
+      <button type="button" id="open-sidebar" class="hidden" title="Open sidebar" aria-label="Open sidebar">
+        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+          <rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor"/>
+          <line x1="8" y1="3.5" x2="8" y2="16.5" stroke="currentColor"/>
+        </svg>
+      </button>
       <input id="query" type="text" placeholder="Drug, indication or mechanism" autocomplete="off">
       <button id="evaluate" type="submit" disabled>Evaluate</button>
     </form>
     <section id="content"><p class="empty">Search a drug, an indication or a mechanism to build an evaluation.</p></section>
   </main>
 
-  <div id="modal" class="modal hidden">
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-box">
-      <div class="modal-head"><strong id="modal-title">Sources</strong><button id="modal-close" aria-label="Close">&times;</button></div>
-      <ul id="modal-list"></ul>
+      <button id="modal-close" class="modal-close" aria-label="Close">&times;</button>
+      <div id="modal-body"></div>
     </div>
   </div>
   <script src="/static/app.js"></script>

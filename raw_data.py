@@ -66,11 +66,3 @@ def render_raw_data_markdown(indication: str, mechanism: str, sources: dict, ana
     lines.append("")
 
     return "\n".join(lines)
-
-
-def build_raw_data_payload(sources: dict) -> list[dict]:
-    """JSON-friendly version of the raw-data block, grouped by source, for the Flask API."""
-    return [
-        {"id": key, "title": SOURCE_TITLES[key], "records": sources.get(key, [])}
-        for key in SOURCE_ORDER
-    ]
