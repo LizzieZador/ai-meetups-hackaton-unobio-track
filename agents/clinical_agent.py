@@ -2,38 +2,58 @@
 
 Owner: Клінічний аналітик. Sources: ClinicalTrials.gov, AACT.
 Covers Required Output section "clinical_development_plan" (regulatory pathway
-is folded in here too — the task brief has no separate "regulations" output
-section, and no allowed source covers FDA/EMA decisions directly).
+and historical precedent are folded in here).
 Chain: consumes the scientific agent's claims; its output feeds the commercial agent.
+
+Enforces structural verification:
+- Evidence claims cite source IDs (e.g. 'S1') with verbatim exact_snippet verified against raw snippets.
+- Metadata (source, url, date_accessed) is stamped by code, never by the model.
+- Inference claims require explicit reasoning, confidence ('low'|'medium'|'high'), and based_on source IDs.
+- Section is stamped as 'clinical_development_plan' by code.
+- Automatic retry on empty or malformed LLM outputs.
+- Graceful fallback when sources list is empty (low-confidence inference only).
 """
-from llm import ask_claude_json
-from schema import Claim, parse_claims
+from typing import Optional
+
+from schema import Claim
+from .base import label_sources, run_agent_llm_with_retry
 
 SYSTEM_PROMPT = """You are a clinical development analyst on a biotech investment committee.
-You receive raw ClinicalTrials.gov / AACT snippets for one target/mechanism and one
-disease/indication (optionally with extra context: modality, development stage,
-preclinical results, biomarkers, route of administration), plus the scientific
-analyst's claims. Produce a JSON array of claim objects (same schema as the
-scientific analyst used), every one tagged "section": "clinical_development_plan".
+You receive:
+1. Target/mechanism and indication (with optional modality, stage, biomarkers context).
+2. Scientific analyst claims (target biology and human translation).
+3. Labeled clinical trial snippets from ClinicalTrials.gov and AACT, each identified by an ID like [S1], [S2].
 
-Cover at minimum:
-- target patient population, primary endpoint, biomarker strategy, comparator,
-  approximate trial size, and development sequence for the proposed program
-  (type "inference", reasoned from the snippets and general field practice)
-- current development stage, trial design and status of the ACTUAL trials found
-  in the snippets (type "evidence", sourced from the snippets)
-- similar historical programs (same target or mechanism class) that succeeded or
-  failed, and what that implies for this program (type "evidence" if a specific
-  trial from the snippets is cited, otherwise type "inference")
-- PTRS (probability of technical & regulatory success) per phase, taken from
-  public industry benchmark ranges by phase and therapeutic area, adjusted
-  up/down with an explicit reason tied to this specific target (type "inference",
-  with reasoning + confidence)
-- the regulatory pathway for this drug class — none of the allowed sources cover
-  FDA/EMA decisions directly, so this MUST be type "inference"
+Produce a JSON array of claim objects covering the clinical development thesis.
 
-Never invent a source for type "evidence". Never change the type or section of a claim you were given.
-Return ONLY the JSON array, nothing else.
+COVER AT MINIMUM:
+1. Proposed trial design (type "inference"): target patient population (line of therapy, biomarker inclusion), primary/secondary endpoints, comparator arm, approximate trial size, and development sequence (e.g., Phase 1/2 dose escalation -> pivotal Phase 3).
+2. Actual trials in public registries (type "evidence"): current development stage, design, enrollment, and status of existing trials for this target/drug in this indication.
+3. Historical successes and failures (type "evidence" if citing a specific trial, otherwise "inference"): similar programs in this mechanism class that succeeded or failed (e.g. terminated for futility or safety), and direct implications for the proposed program.
+4. Biomarker multiplier & patient selection (type "inference"): explicit companion diagnostic or biomarker enrichment strategy (e.g. specific mutation, expression threshold, ctDNA) and how biomarker-guided patient selection acts as a success multiplier (historically ~2x higher PTRS vs unselected populations).
+5. Trial economics & development timeline (type "inference"): estimated timeline to primary readout (months for enrollment + follow-up) and approximate capital required for the next clinical phase based on sample size and therapeutic area benchmark costs ($50k-$150k/patient).
+6. PTRS (probability of technical & regulatory success) per phase (type "inference"): benchmark ranges for this therapeutic area, adjusted up or down with explicit target-specific rationale and biomarker multiplier.
+7. Regulatory pathway (type "inference"): expedited designations (Breakthrough, Fast Track), accelerated approval vs standard approval endpoints.
+
+STRICT SCHEMA RULES:
+For type "evidence":
+- "claim": concise factual statement.
+- "type": "evidence"
+- "evidence_id": ID of the source supporting this claim (e.g. "S1").
+- "exact_snippet": VERBATIM text copied directly from that source's Snippet text. Do not paraphrase or edit.
+(Code will verify this exact quote in the source and supply the source name, URL, and date).
+
+For type "inference":
+- "claim": analytical conclusion, recommendation, or assessment.
+- "type": "inference"
+- "reasoning": detailed logical justification.
+- "confidence": "low", "medium", or "high".
+- "based_on": array of source IDs used (e.g. ["S1"] or ["S1", "S2"]). Use [] if based on general clinical knowledge.
+
+IMPORTANT CONSTRAINTS:
+- If no sources are provided, you MUST produce ONLY type "inference" claims with "confidence": "low" and "based_on": [].
+- Never invent an evidence_id or exact_snippet.
+- Return ONLY the JSON array, nothing else.
 """
 
 
@@ -43,13 +63,49 @@ def clinical_agent(
     sources: list[dict],
     scientific_claims: list[Claim],
     extra_context: str = "",
+    valid_sources: Optional[set] = None,
+    max_claims: int = 12,
 ) -> list[Claim]:
+    """Run the clinical development analyst agent with code-enforced verification.
+
+    Args:
+        indication: Disease / indication name.
+        mechanism: Biological mechanism or target name.
+        sources: Raw source records from ClinicalTrials.gov and AACT.
+        scientific_claims: Upstream claims from the scientific agent.
+        extra_context: Optional user-provided context (modality, biomarkers, etc.).
+        valid_sources: Optional set of allowed source names (for pipeline compatibility).
+        max_claims: Upper bound on accepted claims returned.
+
+    Returns:
+        List of validated Claim objects tagged section 'clinical_development_plan'.
+    """
+    source_map, prompt_sources_block = label_sources(sources)
+
+    scientific_claims_summary = []
+    for c in scientific_claims or []:
+        c_dict = c.to_dict() if hasattr(c, "to_dict") else dict(c)
+        scientific_claims_summary.append({
+            "claim": c_dict.get("claim"),
+            "type": c_dict.get("type"),
+            "section": c_dict.get("section"),
+            "reasoning": c_dict.get("reasoning"),
+        })
+
     user_prompt = (
         f"Indication: {indication}\n"
         f"Mechanism/target: {mechanism}\n"
         + (f"Additional context: {extra_context}\n" if extra_context else "")
-        + f"\nScientific analyst claims:\n{[c.to_dict() for c in scientific_claims]}\n\n"
-        f"Sources:\n{sources}"
+        + f"\nScientific analyst claims (upstream context):\n{scientific_claims_summary}\n\n"
+        f"Available clinical sources:\n{prompt_sources_block}\n"
     )
-    raw = ask_claude_json(SYSTEM_PROMPT, user_prompt)
-    return parse_claims(raw)
+
+    return run_agent_llm_with_retry(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        source_map=source_map,
+        section="clinical_development_plan",
+        agent_name="ClinicalAgent",
+        max_claims=max_claims,
+        valid_sources=valid_sources,
+    )
