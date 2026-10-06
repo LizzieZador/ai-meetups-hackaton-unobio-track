@@ -15,50 +15,14 @@ BADGE = {"evidence": "EVIDENCE", "inference": "INFERENCE"}
 VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
 
 
+from agents.chair_agent import render_underwriting_report
+
+
 def render_report(
     indication: str, mechanism: str, claims: list[Claim], cost_summary: str | None = None
 ) -> str:
-    by_section: dict[str, list[Claim]] = defaultdict(list)
-    for c in claims:
-        by_section[c.section].append(c)
+    return render_underwriting_report(indication, mechanism, claims, cost_summary)
 
-    verdict = next(
-        (c.claim for c in by_section.get("recommendation", []) if c.claim in VERDICTS),
-        "No verdict produced",
-    )
-
-    lines = [
-        f"# Investment Underwriting Report: {mechanism} — {indication}",
-        f"_Generated {datetime.date.today().isoformat()}_",
-        "",
-        f"**Recommendation: {verdict}**",
-        "",
-    ]
-
-    for section, title in SECTION_TITLES.items():
-        section_claims = by_section.get(section, [])
-        lines.append(f"## {title}")
-        if not section_claims:
-            lines.append("_No claims generated for this section — insufficient evidence or agent did not respond._")
-        for c in section_claims:
-            lines.extend(_render_claim(c))
-        lines.append("")
-
-    lines.append("## Sources Supporting Major Claims")
-    sources = _collect_sources(claims)
-    if sources:
-        for source, url, date_accessed in sources:
-            link = f"[{source}]({url})" if url else source
-            lines.append(f"- {link} (accessed {date_accessed})")
-    else:
-        lines.append("_No evidence-backed sources were collected for this run._")
-
-    if cost_summary:
-        lines.append("")
-        lines.append("---")
-        lines.append(cost_summary)
-
-    return "\n".join(lines)
 
 
 def _render_claim(c: Claim) -> list[str]:

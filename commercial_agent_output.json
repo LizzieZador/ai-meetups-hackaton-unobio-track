@@ -1,0 +1,20 @@
+{
+  "agent": "commercial_agent",
+  "indication": "Non-Small Cell Lung Cancer",
+  "target": "KRAS G12C",
+  "claims": [
+    {
+      "claim": "Non-Small Cell Lung Cancer: prevalence 550000 and annual incidence 320000 in US+EU.",
+      "type": "evidence",
+      "section": "commercial_opportunity",
+      "source": "SEER Cancer Statistics / GLOBOCAN",
+      "date_accessed": "2026-10-06"
+    }
+  ],
+  "financial_metrics": {
+    "peak_sales_low": 2400,
+    "peak_sales_base": 4800,
+    "peak_sales_high": 9600,
+    "currency": "USD_millions"
+  }
+}
