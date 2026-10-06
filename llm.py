@@ -24,7 +24,7 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 MODEL_ANTHROPIC = "claude-sonnet-5"
 MODEL_GEMINI = "gemini-3.5-flash"
-GEMINI_CANDIDATES = [MODEL_GEMINI, "gemini-3.8-flash"]  # tried in order
+GEMINI_CANDIDATES = [MODEL_GEMINI, "gemini-3.5-flash-lite", "gemini-3.8-flash"]  # tried in order
 GEMINI_THINKING_BUDGET = 2000  # see _ask_gemini: a hint to the model, not a hard cap
 GEMINI_MAX_ATTEMPTS = 4  # per model, for transient 429/500/503 only
 
