@@ -1,10 +1,12 @@
-"""LLM wrapper supporting both Gemini API and Claude API.
+"""LLM wrapper supporting ChatGPT (via the team's OpenAI-compatible gateway),
+Gemini, and Claude — tried in that priority order.
 
 Every agent calls ask_claude_json() directly with its own system + user prompt.
-If GEMINI_API_KEY is present in the environment, it uses Google Gemini (free tier).
-Otherwise, it uses the Anthropic Claude API. If Gemini is set but fails entirely
-(e.g. free-tier quota exhausted) and a real ANTHROPIC_API_KEY is also present,
-falls back to Claude instead of failing the whole report.
+Priority: if TEAM_API_KEY is set, ChatGPT (the team gateway) is tried first.
+If it's unset, or the call fails for any reason, falls back to Gemini
+(GEMINI_API_KEY / GOOGLE_API_KEY), and if that also fails, to Claude
+(ANTHROPIC_API_KEY). Each stage is independent — a provider just needs its key
+set to be tried; it doesn't need the earlier ones configured too.
 
 Responses are cached to disk by a hash of (system_prompt, user_prompt): the
 Gemini free tier caps at 20 requests/day *per model*, and one full pipeline run
@@ -28,13 +30,22 @@ GEMINI_CANDIDATES = [MODEL_GEMINI, "gemini-3.5-flash-lite", "gemini-3.8-flash"] 
 GEMINI_THINKING_BUDGET = 2000  # see _ask_gemini: a hint to the model, not a hard cap
 GEMINI_MAX_ATTEMPTS = 4  # per model, for transient 429/500/503 only
 
+MODEL_OPENAI = "gpt-6-luna"
+OPENAI_BASE_URL = "https://secrethon-gateway.nicewave-ab4e0867.swedencentral.azurecontainerapps.io/v1"
+
 # Approximate pricing per 1M tokens (USD)
 PRICE_ANTHROPIC_IN = 2.00
 PRICE_ANTHROPIC_OUT = 10.00
 PRICE_GEMINI_IN = 0.075
 PRICE_GEMINI_OUT = 0.30
+# The team gateway's real per-token price isn't published anywhere we can
+# confirm — 0.0 is a known placeholder, not a verified free tier. Update these
+# the moment the team gateway's actual pricing is known.
+PRICE_OPENAI_IN = 0.0
+PRICE_OPENAI_OUT = 0.0
 
 _anthropic_client = None
+_openai_client = None
 _usage_log: list[dict] = []
 
 
@@ -44,6 +55,14 @@ def _get_anthropic_client():
         import anthropic
         _anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     return _anthropic_client
+
+
+def _get_openai_client(api_key: str):
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(base_url=OPENAI_BASE_URL, api_key=api_key)
+    return _openai_client
 
 
 def reset_usage_log() -> None:
@@ -58,9 +77,12 @@ def get_usage_summary() -> dict:
     model = _usage_log[0]["model"] if _usage_log else "unknown"
 
     if "gemini" in model.lower():
-        cost = (input_tokens / 1_000_000) * PRICE_GEMINI_IN + (output_tokens / 1_000_000) * PRICE_GEMINI_OUT
+        price_in, price_out = PRICE_GEMINI_IN, PRICE_GEMINI_OUT
+    elif model == MODEL_OPENAI:
+        price_in, price_out = PRICE_OPENAI_IN, PRICE_OPENAI_OUT
     else:
-        cost = (input_tokens / 1_000_000) * PRICE_ANTHROPIC_IN + (output_tokens / 1_000_000) * PRICE_ANTHROPIC_OUT
+        price_in, price_out = PRICE_ANTHROPIC_IN, PRICE_ANTHROPIC_OUT
+    cost = (input_tokens / 1_000_000) * price_in + (output_tokens / 1_000_000) * price_out
 
     return {
         "model": model,
@@ -172,6 +194,30 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
     raise RuntimeError(f"Gemini request failed ({last_error})")
 
 
+def _ask_openai(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> list[dict]:
+    """Call the team's OpenAI-compatible gateway (ChatGPT / gpt-6-luna) — given
+    top priority over Gemini/Claude. Raises on any failure so the caller can
+    fall back to the next provider; a reply that arrives but isn't usable JSON
+    just yields [] (that agent contributes no claims)."""
+    client = _get_openai_client(api_key)
+    response = client.chat.completions.create(
+        model=MODEL_OPENAI,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_completion_tokens=max_tokens,
+    )
+    usage = response.usage
+    _usage_log.append({
+        "model": MODEL_OPENAI,
+        "input_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
+        "output_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
+    })
+    text = response.choices[0].message.content or ""
+    return _parse_claims_json(text)
+
+
 def _ask_claude(system_prompt: str, user_prompt: str, max_tokens: int = 3000) -> list[dict]:
     client = _get_anthropic_client()
     response = client.messages.create(
@@ -201,8 +247,13 @@ def _real_key(name: str) -> str:
 
 
 def active_model() -> str:
-    """Name of the model ask_claude_json() will use right now (for UI/diagnostics)."""
-    return MODEL_GEMINI if (_real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY")) else MODEL_ANTHROPIC
+    """Name of the model ask_claude_json() will try FIRST right now (for UI/diagnostics).
+    Actual calls may still fall through to a later provider if this one fails."""
+    if _real_key("TEAM_API_KEY"):
+        return MODEL_OPENAI
+    if _real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY"):
+        return MODEL_GEMINI
+    return MODEL_ANTHROPIC
 
 
 def _cache_path(system_prompt: str, user_prompt: str) -> Path:
@@ -228,19 +279,37 @@ def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 8000
 
 
 def _ask(system_prompt: str, user_prompt: str, max_tokens: int) -> list[dict]:
+    """Priority chain: ChatGPT (team gateway) -> Gemini -> Claude.
+
+    Each stage only runs if its key is set, and a failure there just moves on
+    to the next configured provider rather than failing the whole call.
+    """
+    openai_key = _real_key("TEAM_API_KEY")
     gemini_key = _real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY")
     claude_key = _real_key("ANTHROPIC_API_KEY")
+
+    if not (openai_key or gemini_key or claude_key):
+        raise RuntimeError(
+            "No LLM key configured: set TEAM_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY in .env"
+        )
+
+    if openai_key:
+        try:
+            return _ask_openai(openai_key, system_prompt, user_prompt, max_tokens)
+        except Exception as e:
+            print(f"[LLM Warning] ChatGPT gateway failed ({e}); falling back to Gemini/Claude")
 
     if gemini_key:
         try:
             return _ask_gemini(gemini_key, system_prompt, user_prompt, max_tokens)
-        except RuntimeError:
+        except RuntimeError as e:
             if not claude_key:
                 raise
             # Gemini unreachable/quota-exhausted but a real Claude key exists too —
             # fall back instead of failing the whole report.
-            return _ask_claude(system_prompt, user_prompt, max_tokens)
+            print(f"[LLM Warning] Gemini failed ({e}); falling back to Claude")
 
-    if not claude_key:
-        raise RuntimeError("No LLM key configured: set GEMINI_API_KEY (or ANTHROPIC_API_KEY) in .env")
-    return _ask_claude(system_prompt, user_prompt, max_tokens)
+    if claude_key:
+        return _ask_claude(system_prompt, user_prompt, max_tokens)
+
+    raise RuntimeError("All configured LLM providers failed for this request")

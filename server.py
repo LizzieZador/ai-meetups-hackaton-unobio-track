@@ -15,6 +15,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from cards import build_cards, build_verdict_claims
 from pipeline import run_pipeline
+from quick_summary import build_quick_summary
 from raw_data import extract_analogs
 from schema import Claim
 
@@ -43,11 +44,13 @@ def build_report(query: str, claims: list[Claim], cost: dict, sources: dict) -> 
     # The bare verdict word is already shown as the header chip — drop it from the
     # list below so it isn't repeated without its reasoning.
     verdict_claims = [c for c in build_verdict_claims(claims) if c.get("claim") not in VERDICTS]
+    analogs = extract_analogs(sources)
     return {
         "query": query,
         "verdict": verdict,
+        "quick_summary": build_quick_summary(claims, sources, analogs),
         "verdict_claims": verdict_claims,
-        "cards": build_cards(claims, sources, extract_analogs(sources)),
+        "cards": build_cards(claims, sources, analogs),
         "cost": cost,
     }
 

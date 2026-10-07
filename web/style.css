@@ -40,6 +40,22 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .verdict.no { background:#fdecea; color:var(--red); }
 .verdict.cond { background:#fff3e0; color:var(--amber); }
 
+/* plain-language quick summary, above everything else */
+.quick-summary { background:var(--tint); border-radius:8px; padding:18px 22px; margin-bottom:24px; }
+.quick-summary h2 { margin:0 0 12px; font-size:16px; font-weight:600; }
+.quick-summary h2 .sub { display:block; font-weight:400; font-size:13px; color:var(--muted); margin-top:2px; }
+.quick-summary ul { margin:0; padding:0; list-style:none; }
+.quick-summary li { padding:9px 0; font-size:15px; line-height:1.45; border-top:1px solid rgba(0,0,0,.06); }
+.quick-summary li:first-child { border-top:0; }
+.qs-line { display:block; }
+.qs-more { display:inline-block; background:none; border:0; color:var(--blue); cursor:pointer; font-size:13px; padding:0; margin-top:4px; }
+.qs-more:hover { text-decoration:underline; }
+.qs-detail { margin-top:8px; padding:10px 14px; background:rgba(255,255,255,.6); border-radius:6px; }
+.qs-detail.hidden { display:none; }
+.qs-detail-text { margin:0; font-size:14px; line-height:1.5; }
+.qs-detail-sources { margin:8px 0 0; font-size:12px; color:var(--muted); }
+.qs-detail-sources a { color:var(--blue); }
+
 /* verdict strip above the grid */
 .verdict-block { background:var(--card); border-radius:8px; padding:18px 22px; box-shadow:0 1px 2px rgba(0,0,0,.04); margin-bottom:28px; }
 .verdict-block h2 { margin:0 0 10px; font-size:16px; font-weight:600; }

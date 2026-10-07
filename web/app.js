@@ -146,6 +146,55 @@ function closeModal() {
   $("modal-body").innerHTML = "";
 }
 
+function renderQuickSummary(rows) {
+  if (!rows || !rows.length) return "";
+  const lines = rows
+    .map((r) => {
+      const hasDetail = !!r.detail_text || (r.detail_sources || []).length > 0;
+      // The full sentence always finishes on its own; the toggle is a
+      // separate element after it, never appended mid-text.
+      const toggle = hasDetail
+        ? `<button type="button" class="qs-more" data-qs="${esc(r.id)}">view more info</button>`
+        : "";
+      return `<li>
+        <div class="qs-line"><strong>${esc(r.label)}:</strong> ${esc(r.text)}</div>
+        ${toggle}
+        <div class="qs-detail hidden" id="qs-detail-${esc(r.id)}"></div>
+      </li>`;
+    })
+    .join("");
+  return `<section class="quick-summary">
+    <h2>At a glance <span class="sub">plain-language summary, straight from the connected data sources</span></h2>
+    <ul>${lines}</ul>
+  </section>`;
+}
+
+function renderQuickDetail(row) {
+  const paragraph = row.detail_text ? `<p class="qs-detail-text">${esc(row.detail_text)}</p>` : "";
+  const sources = (row.detail_sources || []).length
+    ? `<p class="qs-detail-sources">Source${row.detail_sources.length > 1 ? "s" : ""}: ${row.detail_sources
+        .map((s) => link(s.source, s.url))
+        .join(", ")}</p>`
+    : "";
+  return paragraph + sources;
+}
+
+function toggleQuickSummaryDetail(id) {
+  const row = (current.quick_summary || []).find((r) => r.id === id);
+  const box = document.getElementById(`qs-detail-${id}`);
+  const btn = document.querySelector(`.qs-more[data-qs="${id}"]`);
+  if (!row || !box) return;
+  const isHidden = box.classList.contains("hidden");
+  if (isHidden) {
+    box.innerHTML = renderQuickDetail(row);
+    box.classList.remove("hidden");
+    if (btn) btn.textContent = "hide info";
+  } else {
+    box.classList.add("hidden");
+    if (btn) btn.textContent = "view more info";
+  }
+}
+
 function show(report) {
   current = report;
   const v = report.verdict;
@@ -160,11 +209,15 @@ function show(report) {
       <h1>${esc(report.query)}</h1><span class="label">Evaluation</span>
       ${v ? `<span class="verdict ${vClass}">${esc(v)}</span>` : ""}
     </div>
+    ${renderQuickSummary(report.quick_summary)}
     ${verdictBlock}
     <div class="grid">${report.cards.map(renderCard).join("")}</div>
     <p class="cost">~$${esc(c.approx_cost_usd)} · ${esc(c.calls)} calls · ${esc(c.model)}</p>`;
   $("content").querySelectorAll(".expand").forEach((b) => {
     b.onclick = () => openCard(current.cards.find((x) => x.id === b.dataset.card));
+  });
+  $("content").querySelectorAll(".qs-more").forEach((b) => {
+    b.onclick = () => toggleQuickSummaryDetail(b.dataset.qs);
   });
 }
 

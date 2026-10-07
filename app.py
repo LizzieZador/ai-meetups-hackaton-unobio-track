@@ -7,6 +7,7 @@ instead of reading one flat block of markdown.
 import streamlit as st
 
 from pipeline import run_pipeline
+from quick_summary import build_quick_summary
 from raw_data import SOURCE_ORDER, SOURCE_TITLES, extract_analogs
 from schema import SECTION_TITLES
 
@@ -35,6 +36,25 @@ if submitted:
             except Exception as e:
                 st.error(f"Pipeline failed: {e}")
                 st.stop()
+
+        analogs_preview = extract_analogs(sources)
+        st.subheader("At a glance")
+        st.caption("Plain-language summary, straight from the connected data sources")
+        for row in build_quick_summary(claims, sources, analogs_preview):
+            has_detail = row.get("detail_text") or row.get("detail_sources")
+            if has_detail:
+                with st.expander(f"{row['label']}: {row['text']}"):
+                    if row.get("detail_text"):
+                        st.markdown(row["detail_text"])
+                    if row.get("detail_sources"):
+                        cites = ", ".join(
+                            f"[{s['source']}]({s['url']})" if s.get("url") else s["source"]
+                            for s in row["detail_sources"]
+                        )
+                        st.caption(f"Source(s): {cites}")
+            else:
+                st.markdown(f"**{row['label']}:** {row['text']}")
+        st.divider()
 
         st.subheader("Raw source data (no LLM — pulled directly from the connected databases)")
         for key in SOURCE_ORDER:

@@ -21,6 +21,7 @@ from agents.clinical_agent import clinical_agent
 from agents.commercial_agent import commercial_agent
 from agents.scientific_agent import scientific_agent
 from llm import get_usage_summary, reset_usage_log
+from quick_summary import build_quick_summary, render_quick_summary_markdown
 from raw_data import collect_valid_sources, extract_analogs, render_raw_data_markdown
 from report import render_report
 from schema import Claim
@@ -62,7 +63,22 @@ def run_pipeline(
     extra_context carries the task brief's optional input info (modality,
     development stage, preclinical results, biomarkers, route of administration)
     as free text — every agent receives it if provided, but it's never required.
+
+    indication/mechanism are normalized (trimmed + lowercased) right here, once,
+    before touching any fetcher, cache key, or LLM prompt — "cancer" and "Cancer"
+    must be the exact same query internally. All 5 sources already match search
+    terms case-insensitively (confirmed directly against PubMed/Open
+    Targets/ClinicalTrials.gov/AACT), so this never changes what's found, only
+    whether two spellings of the same term share one cache entry and one set of
+    LLM calls instead of two independent (and not necessarily identical) ones.
+    This local reassignment doesn't affect the caller's own variables, so
+    callers that build a report title from their original indication/mechanism
+    (run_pipeline_markdown, the web UI's `query`) still show whatever case the
+    user actually typed.
     """
+    indication = indication.strip().lower()
+    mechanism = mechanism.strip().lower()
+
     reset_usage_log()
     sources = collect_sources(indication, mechanism)
     valid_sources = collect_valid_sources(sources)
@@ -113,11 +129,14 @@ def _safe_agent_call(name: str, fn, *args, **kwargs) -> list[Claim]:
 def run_pipeline_markdown(indication: str, mechanism: str, extra_context: str = "") -> str:
     """Convenience wrapper for callers (CLI) that just want the rendered report.
 
-    Renders the raw source data + analogs FIRST (no LLM), then the committee's
-    LLM-based verdict/analysis below it.
+    Renders, in order: a one-line-per-category plain-language summary (no LLM
+    needed to read it), then the raw source data + analogs (no LLM), then the
+    committee's LLM-based verdict/analysis.
     """
     claims, cost_summary, sources = run_pipeline(indication, mechanism, extra_context)
     analogs = extract_analogs(sources)
+
+    quick_section = render_quick_summary_markdown(build_quick_summary(claims, sources, analogs))
     raw_section = render_raw_data_markdown(indication, mechanism, sources, analogs)
 
     cost_line = (
@@ -126,7 +145,7 @@ def run_pipeline_markdown(indication: str, mechanism: str, extra_context: str = 
         f"{cost_summary['input_tokens']} in / {cost_summary['output_tokens']} out tokens)"
     )
     committee_section = render_report(indication, mechanism, claims, cost_summary=cost_line)
-    return raw_section + "\n\n---\n\n" + committee_section
+    return quick_section + "\n\n---\n\n" + raw_section + "\n\n---\n\n" + committee_section
 
 
 def _write_trace(
