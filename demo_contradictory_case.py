@@ -71,7 +71,7 @@ def main():
 
     # 1. Базовий запуск
     print("\n>>> КРОК 1: Запуск базового пайплайну (без додаткового контексту)...")
-    base_claims, base_cost = run_pipeline(INDICATION, MECHANISM, extra_context="")
+    base_claims, base_cost, _ = run_pipeline(INDICATION, MECHANISM, extra_context="")
     base_summary = extract_summary(base_claims)
 
     print(f"   [Базовий вердикт]: {base_summary['verdict']}")
@@ -81,7 +81,7 @@ def main():
     # 2. Запуск із новими суперечливими даними
     print("\n>>> КРОК 2: Запуск із новими суперечливими даними (FDA Hold + токсичність)...")
     print(f"   Введений контекст: {CONTRADICTORY_CONTEXT[:100]}...")
-    contra_claims, contra_cost = run_pipeline(INDICATION, MECHANISM, extra_context=CONTRADICTORY_CONTEXT)
+    contra_claims, contra_cost, _ = run_pipeline(INDICATION, MECHANISM, extra_context=CONTRADICTORY_CONTEXT)
     contra_summary = extract_summary(contra_claims)
 
     print(f"   [Оновлений вердикт]: {contra_summary['verdict']}")

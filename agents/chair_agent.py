@@ -6,6 +6,7 @@ new claims. Covers Required Output sections "recommendation", "capital_required"
 """
 import datetime
 import json
+import re
 from collections import defaultdict
 from llm import ask_claude_json
 from schema import Claim, parse_claims, SECTION_TITLES
@@ -56,8 +57,19 @@ CRITICAL RULES:
 2. "section" MUST be one of exactly these five values:
    - "key_risks": Top 3-5 risks ranked by (probability x impact on rNPV). Reasoning MUST state explicit estimated probability (%) and impact on rNPV.
    - "capital_required": Capital required to reach the next major milestone, time to that milestone, future financing needs, and exit/licensing outcomes (use transparent ranges, e.g. $15M-$25M, 18-24 months).
-   - "critical_unknowns": The most important unknowns that cannot be answered from public evidence and materially affect the investment case.
-   - "diligence_questions": 5 to 10 highest-value diligence questions. For each, reasoning MUST specify what non-public data is required (e.g. proprietary assays, patient-level data, KOL interviews, CMC audit).
+   - "diligence_questions": YOU MUST PRODUCE BETWEEN 5 AND 10 INDIVIDUAL, DISTINCT CLAIM OBJECTS (min 5, max 10).
+     Each question MUST be its OWN SEPARATE claim object in the JSON array. NEVER combine multiple questions into one claim or into a numbered list inside reasoning!
+     Format for EACH diligence question:
+       "claim": "Clear, direct, high-value question that CANNOT be answered from public evidence (e.g. 'What is the human therapeutic window between target inhibition and off-target cardiotoxicity?')",
+       "reasoning": "Explicit non-public data required: [specify exact proprietary data needed: e.g. proprietary Phase 1 PK/PD line listings, unredacted GLP tox reports, FDA meeting correspondence, KOL prescribing interviews, CMC batch analytics, patent FTO legal opinions]",
+       "confidence": "high"|"medium"|"low",
+       "section": "diligence_questions",
+       "type": "inference"
+     You MUST ensure cross-discipline coverage across:
+       - Biology / Translation (1-2 questions on target engagement, selectivity, biomarkers)
+       - Clinical Development / Safety (2-3 questions on trial execution, patient-level safety, dosing)
+       - Regulatory / CMC / Manufacturing (1-2 questions on FDA meeting minutes, formulation, yield)
+       - Commercial / IP / Competition (1-2 questions on patent FTO, payer reimbursement, KOL adoption)
    - "recommendation": Must contain EXACTLY THREE claims in this specific order:
      1) Executive Summary narrative claim:
         "claim": "Executive Summary: <A concise 2-3 sentence cohesive narrative synthesizing target biology, clinical development feasibility, commercial market position, primary failure mode, and overarching committee conclusion>"
@@ -157,19 +169,12 @@ def chair_agent(
         )
         sanitized_synthesis.append(verdict_claim_obj)
 
-    # Програмне забезпечення правил: High Risk Override & Data Deficiency
+    # Програмне забезпечення правил: High Risk Override, Data Deficiency та 5-10 Diligence Questions
     _enforce_risk_override_guardrail(all_claims, sanitized_synthesis)
+    _enforce_diligence_questions_guardrail(all_claims, sanitized_synthesis, indication, mechanism)
 
-    # Повертаємо CommitteeClaims — об'єкт, сумісний з list[Claim], але зі збереженою зв'язністю
-    return CommitteeClaims(
-        claims=all_claims + sanitized_synthesis,
-        indication=indication,
-        mechanism=mechanism,
-        scientific_claims=scientific_claims,
-        clinical_claims=clinical_claims,
-        commercial_claims=commercial_claims,
-        chair_claims=sanitized_synthesis,
-    )
+    # Повертаємо об'єднаний список усіх claims
+    return all_claims + sanitized_synthesis
 
 
 def _enforce_risk_override_guardrail(upstream_claims: list[Claim], synthesis_claims: list[Claim]) -> None:
@@ -230,6 +235,405 @@ def _enforce_risk_override_guardrail(upstream_claims: list[Claim], synthesis_cla
                 f"because this critical risk was not explicitly mitigated. "
                 + (verdict_claim.reasoning or "")
             )
+
+
+def _is_duplicate_question(q_text: str, questions: list[Claim]) -> bool:
+    """Перевіряє, чи питання вже присутнє в списку (за семантичним перекриттям значущих слів)."""
+    words_q = {w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", q_text)}
+    if not words_q:
+        return False
+    for existing in questions:
+        words_ex = {w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", existing.claim)}
+        if not words_ex:
+            continue
+        overlap = len(words_q & words_ex)
+        if overlap / max(len(words_q), 1) >= 0.65 or overlap / max(len(words_ex), 1) >= 0.65:
+            return True
+    return False
+
+
+def _classify_question_discipline(text: str) -> str:
+    """Визначає дисциплінарну категорію запитання для збалансованого покриття комітету."""
+    t = text.lower()
+    if any(k in t for k in ("target", "biology", "biomarker", "selectivity", "kinome", "receptor", "occupancy", "translation", "mutation", "biopsy", "pathway")):
+        return "BIOLOGY"
+    elif any(k in t for k in ("fda", "ema", "regulatory", "hold", "crl", "cmc", "formulation", "yield", "manufacturing", "stability", "meeting minutes", "ind")):
+        return "REGULATORY_CMC"
+    elif any(k in t for k in ("patent", "fto", "freedom-to-operate", "payer", "reimbursement", "pricing", "competitor", "standard of care", "market", "commercial", "sales")):
+        return "COMMERCIAL_IP"
+    else:
+        return "CLINICAL_SAFETY"
+
+
+def _score_diligence_question(
+    q: Claim,
+    top_risks: list[Claim],
+    critical_unknowns: list[Claim],
+    missing_links: list[Claim],
+    indication: str,
+    mechanism: str,
+) -> float:
+    """Багатофакторна оцінка важливості запитання для андеррайтингу:
+    - Deal-killers & ТОП-ризики: найвищий бал (+6..+9)
+    - Розриви трансляції та Target Engagement (+5..+8)
+    - Critical Unknowns (+4)
+    - Фактори безпеки та регуляторної летальності (+4)
+    - Комерційна диференціація та FTO патенти (+3)
+    - Специфічність необхідних закритих даних (+2.5)
+    - Рівень впевненості LLM (+1..+2)
+    """
+    score = 0.0
+    text_q = f"{q.claim} {q.reasoning or ''}".lower()
+    words_q = {w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", text_q)}
+
+    # 1. Співпадіння з ТОП-ризиками (Deal-killers: Найвищий пріоритет)
+    for idx, r in enumerate(top_risks[:3]):
+        r_words = {w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", f"{r.claim} {r.reasoning or ''}")}
+        overlap = len(words_q & r_words)
+        if overlap >= 2:
+            multiplier = 6.0 if idx == 0 else (4.0 if idx == 1 else 2.5)
+            score += multiplier
+            if any(term in f"{r.claim} {r.reasoning or ''}".lower() for term in ("high prob", "high impact", "fatal", "death", "toxic", "hold", "negative")):
+                score += 3.0
+            break
+
+    # 2. Співпадіння з критичними розривами трансляції (Missing links / Target engagement)
+    for ml in missing_links:
+        ml_words = {w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", ml.claim)}
+        if len(words_q & ml_words) >= 2:
+            score += 5.0
+            break
+    if any(k in text_q for k in ("target engagement", "receptor occupancy", "tissue biopsy", "exposure-response", "pharmacodynamic")):
+        score += 3.0
+
+    # 3. Співпадіння з Critical Unknowns
+    for u in critical_unknowns:
+        u_words = {w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", u.claim)}
+        if len(words_q & u_words) >= 2:
+            score += 4.0
+            break
+
+    # 4. Фактори безпеки та регуляторної летальності (Safety / Lethal risks / FDA)
+    if any(k in text_q for k in ("safety", "toxic", "cardiotox", "hepatotox", "death", "mortality", "adverse event", "sae", "tolerab", "therapeutic window", "dose-limiting")):
+        score += 4.0
+    if any(k in text_q for k in ("fda", "clinical hold", "crl", "complete response", "regulatory", "ind", "accelerated approval")):
+        score += 3.5
+
+    # 5. Комерційна диференціація, конкуренція та патенти
+    if any(k in text_q for k in ("head-to-head", "superiority", "differentiat", "standard of care", "displacement", "freedom-to-operate", "fto", "patent")):
+        score += 3.0
+    if any(k in text_q for k in ("reimbursement", "payer", "formulary", "pricing", "budget impact")):
+        score += 2.5
+
+    # 6. Специфічність необхідних закритих даних (Concrete Non-Public Data)
+    reason_lower = (q.reasoning or "").lower()
+    if any(k in reason_lower for k in ("phase 1", "pk/pd", "unredacted", "patient-level", "crf", "line listing", "biopsy", "glp", "fto legal opinion", "batch yield", "advisory board")):
+        score += 2.5
+
+    # 7. Впевненість моделі (Confidence)
+    if q.confidence == "high":
+        score += 2.0
+    elif q.confidence == "medium":
+        score += 1.0
+
+    return score
+
+
+def _unpack_diligence_questions(existing_questions: list[Claim]) -> list[Claim]:
+    """Розпаковує згруповані списки питань на окремі об'єкти Claim."""
+    unpacked: list[Claim] = []
+    for c in existing_questions:
+        claim_text = (c.claim or "").strip()
+        reason_text = (c.reasoning or "").strip()
+
+        # Спроба 1: Розбиття за нумерацією або маркерами списку
+        split_items = re.split(r"(?:^|\n|\s+)(?:\d+[\.\)]|[-*])\s+", claim_text)
+        claim_items = [item.strip() for item in split_items if item and len(item.strip()) > 10]
+
+        # Спроба 2: Якщо списку немає, але в тексті кілька окремих речень зі знаком '?'
+        if len(claim_items) < 2 and claim_text.count("?") >= 2:
+            raw_qs = [q.strip() for q in re.split(r"\?\s+", claim_text) if len(q.strip()) > 10]
+            if len(raw_qs) >= 2:
+                claim_items = [q if q.endswith("?") else f"{q}?" for q in raw_qs]
+
+        if len(claim_items) >= 2:
+            # Спробуємо також розбити reasoning за номерами, якщо він згрупований
+            split_reasons = re.split(r"(?:^|\n|\s+)(?:\d+[\.\)]|[-*])\s+", reason_text)
+            reason_items = [item.strip() for item in split_reasons if item and len(item.strip()) > 5]
+
+            for idx, item in enumerate(claim_items):
+                parts = re.split(r"(?i)\s*(?:requires?|requiring|needing|data required:?|non-public:?)\s*", item, maxsplit=1)
+                q_text = parts[0].strip(" -:;,")
+
+                if len(parts) > 1:
+                    data_text = parts[1].strip()
+                elif idx < len(reason_items):
+                    data_text = reason_items[idx]
+                else:
+                    data_text = reason_text or "Requires proprietary non-public documentation and audit data."
+
+                q_text = re.sub(r"^\d+[\.\)]\s*", "", q_text)
+                if not q_text.endswith("?"):
+                    q_text += "?"
+
+                data_clean = re.sub(r"^(?:requires:?\s*)+", "", data_text, flags=re.I).strip()
+                unpacked.append(
+                    Claim(
+                        claim=q_text,
+                        type="inference",
+                        section="diligence_questions",
+                        reasoning=f"Requires {data_clean}" if data_clean else "Requires proprietary non-public documentation and audit data.",
+                        confidence=c.confidence or "high",
+                    )
+                )
+        else:
+            c_text = re.sub(r"^\d+[\.\)]\s*", "", claim_text)
+            c_text = re.sub(r"^[-*]\s*", "", c_text)
+            c.claim = c_text if c_text.endswith("?") else f"{c_text}?"
+            unpacked.append(c)
+
+    return unpacked
+
+
+def _synthesize_grounded_candidates(
+    upstream_claims: list[Claim], synthesis_claims: list[Claim], indication: str, mechanism: str
+) -> list[Claim]:
+    """Генерує додаткові запитання Дью-Ділідженс ВИКЛЮЧНО на основі наявних фактів у базі даних:
+    - critical_unknowns (синтезовані невідомі)
+    - human_translation_thesis (прогалини ланцюжка трансляції та MISSING LINKs)
+    - key_risks (ідентифіковані ризики)
+    - clinical_development_plan (сигнали безпеки, зупинки трайлів, стратифікація)
+    - competitive_landscape & commercial_opportunity (конкуренти, відшкодування)
+    Жодне твердження не береться 'з повітря'.
+    """
+    candidates: list[Claim] = []
+
+    # 1. Базування на Critical Unknowns (найнадійніша база: це невідомі, які комітет уже виявив)
+    for u in synthesis_claims:
+        if u.section == "critical_unknowns":
+            u_clean = u.claim.strip().rstrip(".")
+            q_claim = u_clean if u_clean.endswith("?") else f"How will the clinical development plan empirically resolve the critical unknown: {u_clean}?"
+            reason = u.reasoning or "Requires confidential Phase 1/2 clinical study reports and primary bioanalytical data."
+            if not reason.lower().startswith("requires"):
+                reason = f"Requires proprietary data room documentation: {reason}"
+            candidates.append(
+                Claim(
+                    claim=q_claim,
+                    type="inference",
+                    section="diligence_questions",
+                    reasoning=reason,
+                    confidence="high",
+                )
+            )
+
+    # 2. Базування на розривах трансляції людини (MISSING LINK у scientific_claims)
+    for c in upstream_claims:
+        if c.section == "human_translation_thesis" and any(k in c.claim.lower() for k in ("missing link", "not demonstrated", "gap")):
+            gap_clean = re.sub(r"(?i)^missing\s+link:?\s*", "", c.claim).strip().rstrip(".")
+            candidates.append(
+                Claim(
+                    claim=f"What human translation assays or clinical biopsy data bridge the identified gap: {gap_clean}?",
+                    type="inference",
+                    section="diligence_questions",
+                    reasoning="Requires proprietary human tissue target engagement, serial biopsies, and quantitative pharmacodynamic assay data.",
+                    confidence="high",
+                )
+            )
+
+    # 3. Базування на ідентифікованих топ-ризиках (key_risks)
+    for r in synthesis_claims:
+        if r.section == "key_risks":
+            risk_clean = re.sub(r"(?i)\s*\(estimated\s+probability.*?\)", "", r.claim).strip().rstrip(".")
+            candidates.append(
+                Claim(
+                    claim=f"What preclinical or clinical mitigation protocol and stopping criteria address the key risk of {risk_clean}?",
+                    type="inference",
+                    section="diligence_questions",
+                    reasoning=f"Requires confidential risk mitigation protocols, safety monitoring committee charters, and: {r.reasoning or 'investigator brochures'}.",
+                    confidence="high",
+                )
+            )
+
+    # 4. Базування на клінічних сигналах безпеки або випробуваннях
+    for c in upstream_claims:
+        if c.section == "clinical_development_plan":
+            c_lower = c.claim.lower()
+            if any(k in c_lower for k in ("halt", "terminat", "suspend", "withdrawn", "safety", "toxic", "cardiotox", "mortality", "death")):
+                candidates.append(
+                    Claim(
+                        claim=f"What specific protocol modifications or safety margins address the clinical signal observed in {c.claim.strip().rstrip('.')}?",
+                        type="inference",
+                        section="diligence_questions",
+                        reasoning="Requires unredacted patient-level serious adverse event (SAE) line listings, DSMB correspondence, and investigator brochures.",
+                        confidence="high",
+                    )
+                )
+            elif any(k in c_lower for k in ("biomarker", "companion diagnostic", "stratification", "enrichment")):
+                candidates.append(
+                    Claim(
+                        claim=f"What analytical and clinical validation data confirms the companion diagnostic threshold for patient selection in {indication}?",
+                        type="inference",
+                        section="diligence_questions",
+                        reasoning="Requires companion diagnostic analytical validation dossiers, retrospective ROC curves, and prospective stratification protocols.",
+                        confidence="medium",
+                    )
+                )
+
+    # 5. Базування на конкурентному ландшафті та комерційній диференціації
+    for c in upstream_claims:
+        if c.section == "competitive_landscape" and any(k in c.claim.lower() for k in ("competitor", "approved", "standard of care")):
+            candidates.append(
+                Claim(
+                    claim=f"What head-to-head or comparative clinical evidence demonstrates meaningful differentiation over standard of care in {indication}?",
+                    type="inference",
+                    section="diligence_questions",
+                    reasoning="Requires target product profile (TPP) benchmark tables, comparative clinical readouts, and qualitative payer advisory board feedback.",
+                    confidence="medium",
+                )
+            )
+            break
+
+    # 6. Базування на відшкодуванні та доступі на ринок
+    for c in upstream_claims:
+        if c.section == "commercial_opportunity" and any(k in c.claim.lower() for k in ("pricing", "reimbursement", "payer", "market access")):
+            candidates.append(
+                Claim(
+                    claim=f"What health economic budget impact models and clinical benefit margins support commercial reimbursement at target pricing in {indication}?",
+                    type="inference",
+                    section="diligence_questions",
+                    reasoning="Requires confidential payer advisory board transcripts, health-economic models, and pricing dossier submissions.",
+                    confidence="medium",
+                )
+            )
+            break
+
+    # 7. Фундаментальні запитання валідації мішені та FTO (завжди прив'язані до конкретного mechanism та indication)
+    candidates.append(
+        Claim(
+            claim=f"Has sustained {mechanism} target engagement and pathway modulation been quantitatively confirmed in human {indication} tissue at tolerable exposures?",
+            type="inference",
+            section="diligence_questions",
+            reasoning="Requires proprietary Phase 1 PK/PD serial tissue biopsy data, radiolabeled PET receptor occupancy studies, or ex-vivo target engagement assays.",
+            confidence="high",
+        )
+    )
+    candidates.append(
+        Claim(
+            claim=f"Does {mechanism} hold a defensible freedom-to-operate (FTO) posture against competitor composition-of-matter and method-of-use patents in {indication}?",
+            type="inference",
+            section="diligence_questions",
+            reasoning="Requires third-party privileged patent freedom-to-operate legal opinions, claim chart matrices, and unredacted prosecution history.",
+            confidence="medium",
+        )
+    )
+
+    return candidates
+
+
+def _select_top_diligence_questions(
+    candidates: list[Claim],
+    top_risks: list[Claim],
+    critical_unknowns: list[Claim],
+    missing_links: list[Claim],
+    indication: str,
+    mechanism: str,
+    target_count: int = 10,
+) -> list[Claim]:
+    """Вибирає найбільш критичні запитання із забезпеченням міждисциплінарного балансу."""
+    if len(candidates) <= target_count:
+        return sorted(
+            candidates,
+            key=lambda q: _score_diligence_question(q, top_risks, critical_unknowns, missing_links, indication, mechanism),
+            reverse=True,
+        )
+
+    # Обчислюємо оцінки для всіх кандидатів
+    scored = [
+        (q, _score_diligence_question(q, top_risks, critical_unknowns, missing_links, indication, mechanism))
+        for q in candidates
+    ]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    selected: list[Claim] = []
+    selected_claims_set = set()
+
+    # 1. Гарантоване покриття: беремо ТОП-1 запитання з кожної представленої дисципліни
+    by_disc = defaultdict(list)
+    for q, sc in scored:
+        disc = _classify_question_discipline(f"{q.claim} {q.reasoning or ''}")
+        by_disc[disc].append((q, sc))
+
+    for disc in ("CLINICAL_SAFETY", "BIOLOGY", "REGULATORY_CMC", "COMMERCIAL_IP"):
+        if disc in by_disc and by_disc[disc]:
+            top_q = by_disc[disc][0][0]
+            if top_q.claim not in selected_claims_set:
+                selected.append(top_q)
+                selected_claims_set.add(top_q.claim)
+
+    # 2. Заповнюємо решту слотів (до target_count) за абсолютним балом важливості
+    for q, sc in scored:
+        if len(selected) >= target_count:
+            break
+        if q.claim not in selected_claims_set:
+            selected.append(q)
+            selected_claims_set.add(q.claim)
+
+    # Фінальне сортування за важливістю
+    selected.sort(
+        key=lambda q: _score_diligence_question(q, top_risks, critical_unknowns, missing_links, indication, mechanism),
+        reverse=True,
+    )
+    return selected
+
+
+def _enforce_diligence_questions_guardrail(
+    upstream_claims: list[Claim], synthesis_claims: list[Claim], indication: str, mechanism: str
+) -> None:
+    """Гарантує виконання вимоги ТЗ: від 5 до 10 окремих, найважливіших питань дью-ділідженс.
+    1. Розпаковує агреговані або нумеровані списки на окремі Claim об'єкти.
+    2. Якщо питань < 5 — доповнює питаннями виключно на основі наявних у базі даних тверджень
+       (critical_unknowns, missing links у трансляції, key_risks, зареєстровані клінічні випробування, конкуренти).
+       Жодні твердження не вигадуються з повітря.
+    3. Якщо питань > 10 — застосовує багатофакторне ранжування за критичністю (deal-killers, безпека, трансляційні розриви,
+       специфічність вимог до data room, дисциплінарне покриття) і залишає ТОП-10 справді найважливіших.
+    """
+    existing_questions = [c for c in synthesis_claims if c.section == "diligence_questions"]
+    unpacked_questions: list[Claim] = _unpack_diligence_questions(existing_questions)
+
+    # Очищуємо синтез від старих питань перед формуванням остаточного списку
+    synthesis_claims[:] = [c for c in synthesis_claims if c.section != "diligence_questions"]
+
+    # Витягуємо ключові ризики, невідомі та прогалини для прив'язки
+    top_risks = [c for c in synthesis_claims if c.section == "key_risks"]
+    critical_unknowns = [c for c in synthesis_claims if c.section == "critical_unknowns"]
+    missing_links = [
+        c for c in upstream_claims
+        if c.section == "human_translation_thesis" and any(k in c.claim.lower() for k in ("missing link", "not demonstrated", "gap"))
+    ]
+
+    # Видаляємо дублікати серед розпакованих питань
+    deduped_questions: list[Claim] = []
+    for q in unpacked_questions:
+        if not _is_duplicate_question(q.claim, deduped_questions):
+            deduped_questions.append(q)
+
+    # Якщо питань менше 5 — доповнюємо виключно з наявних у системі даних (data-grounded)
+    if len(deduped_questions) < 5:
+        grounded_candidates = _synthesize_grounded_candidates(
+            upstream_claims, synthesis_claims, indication, mechanism
+        )
+        for cand in grounded_candidates:
+            if len(deduped_questions) >= 5:
+                break
+            if not _is_duplicate_question(cand.claim, deduped_questions):
+                deduped_questions.append(cand)
+
+    # Застосовуємо розумний відбір та ранжування (ТОП-10 максимум, мінімум 5)
+    final_questions = _select_top_diligence_questions(
+        deduped_questions, top_risks, critical_unknowns, missing_links, indication, mechanism, target_count=10
+    )
+
+    synthesis_claims.extend(final_questions)
 
 
 def generate_executive_summary(claims: list[Claim]) -> str:
@@ -300,122 +704,6 @@ def generate_executive_summary(claims: list[Claim]) -> str:
 def render_underwriting_report(
     indication: str, mechanism: str, claims: list[Claim], cost_summary: str | None = None
 ) -> str:
-    """Вивід фінального звіту Investment Underwriting Report згідно з Required Output ТЗ.
-
-    Структура виводу:
-    1. Заголовок та метадані
-    2. Recommendation: Invest / Conditional / Do Not Invest
-    3. Executive Summary (коротка саммарі на основі даних інших аналітиків)
-    4. Required Output (усі 10 обов'язкових секцій)
-    5. Sources Supporting Major Claims (клікабельні джерела доказів)
-    """
-    by_section: dict[str, list[Claim]] = defaultdict(list)
-    for c in claims:
-        by_section[c.section].append(c)
-
-    verdict = next(
-        (c.claim for c in by_section.get("recommendation", []) if c.claim in VALID_VERDICTS),
-        "Conditional",
-    )
-
-    lines = [
-        f"# Investment Underwriting Report: {mechanism} — {indication}",
-        f"_Generated {datetime.date.today().isoformat()}_",
-        "",
-        f"**Recommendation: {verdict}**",
-        "",
-        generate_executive_summary(claims),
-        "",
-        "---",
-        "",
-    ]
-
-    # Required Output секції точно за списком з ТЗ
-    for section, title in SECTION_TITLES.items():
-        section_claims = by_section.get(section, [])
-        lines.append(f"## {title}")
-        if not section_claims:
-            lines.append("_No claims generated for this section — insufficient evidence or agent did not respond._")
-        for c in section_claims:
-            badge = "EVIDENCE" if c.type == "evidence" else "INFERENCE"
-            lines.append(f"- **{c.claim}** `[{badge}]`")
-            if c.type == "evidence":
-                link = f"[{c.source}]({c.url})" if c.url else (c.source or "Unknown Source")
-                lines.append(f"  - source: {link} (accessed {c.date_accessed or 'N/A'})")
-            else:
-                lines.append(f"  - reasoning: {c.reasoning} (confidence: {c.confidence})")
-        lines.append("")
-
-    # Sources supporting major claims (збирається кодом із evidence-claims)
-    lines.append("## Sources Supporting Major Claims")
-    seen_sources = set()
-    sources = []
-    for c in claims:
-        if c.type == "evidence" and c.source and c.source not in seen_sources:
-            seen_sources.add(c.source)
-            sources.append((c.source, c.url, c.date_accessed))
-
-    if sources:
-        for source, url, date_accessed in sources:
-            link = f"[{source}]({url})" if url else source
-            lines.append(f"- {link} (accessed {date_accessed or 'N/A'})")
-    else:
-        lines.append("_No evidence-backed sources were collected for this run._")
-
-    if cost_summary:
-        lines.append("")
-        lines.append("---")
-        lines.append(cost_summary)
-
-    return "\n".join(lines)
-
-
-class CommitteeClaims(list):
-    """Розширений список Claims із збереженням наскрізної зв'язності та структури звіту.
-
-    100% сумісний зі звичайним list[Claim], але надає прямий доступ до:
-    - .verdict : Фінальний вердикт (Invest / Conditional / Do Not Invest)
-    - .executive_summary : Зв'язне резюме для інвесторів
-    - .report : Повний відформатований Investment Underwriting Report (Markdown)
-    - .by_section : Словник claims за 10 обов'язковими секціями
-    - .scientific_claims / .clinical_claims / .commercial_claims / .chair_claims
-    """
-
-    def __init__(
-        self,
-        claims: list[Claim],
-        indication: str = "",
-        mechanism: str = "",
-        scientific_claims: list[Claim] | None = None,
-        clinical_claims: list[Claim] | None = None,
-        commercial_claims: list[Claim] | None = None,
-        chair_claims: list[Claim] | None = None,
-    ):
-        super().__init__(claims)
-        self.indication = indication
-        self.mechanism = mechanism
-        self.scientific_claims = scientific_claims or []
-        self.clinical_claims = clinical_claims or []
-        self.commercial_claims = commercial_claims or []
-        self.chair_claims = chair_claims or []
-
-        self.by_section: dict[str, list[Claim]] = defaultdict(list)
-        for c in self:
-            self.by_section[c.section].append(c)
-
-        verdict_claim = next(
-            (c.claim for c in self.by_section.get("recommendation", []) if c.claim in VALID_VERDICTS),
-            "Conditional",
-        )
-        self.verdict = verdict_claim
-        self.executive_summary = generate_executive_summary(self)
-        self.report = render_underwriting_report(self.indication, self.mechanism, self)
-
-    def render(self, cost_summary: str | None = None) -> str:
-        """Повертає відрендерений Markdown звіт."""
-        return render_underwriting_report(self.indication, self.mechanism, self, cost_summary=cost_summary)
-
-    def __str__(self) -> str:
-        return self.report
-
-
+    """Вивід фінального звіту Investment Underwriting Report (делегує до report.render_report)."""
+    from report import render_report
+    return render_report(indication, mechanism, claims, cost_summary)

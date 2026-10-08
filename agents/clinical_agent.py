@@ -34,6 +34,8 @@ COVER AT MINIMUM:
 5. Trial economics & development timeline (type "inference"): estimated timeline to primary readout (months for enrollment + follow-up) and approximate capital required for the next clinical phase based on sample size and therapeutic area benchmark costs ($50k-$150k/patient).
 6. PTRS (probability of technical & regulatory success) per phase (type "inference"): benchmark ranges for this therapeutic area, adjusted up or down with explicit target-specific rationale and biomarker multiplier.
 7. Regulatory pathway (type "inference"): expedited designations (Breakthrough, Fast Track), accelerated approval vs standard approval endpoints.
+8. Clinical & Safety Diligence Gaps (CRITICAL, type "inference"):
+   Produce at least 1-2 inference claims explicitly identifying high-stakes clinical unknowns that cannot be determined from public registries (e.g. unredacted patient-level adverse event narratives, dose-limiting toxicity kinetics, investigator brochure safety data, protocol amendments) and specifying what proprietary clinical data or regulatory audits are required.
 
 STRICT SCHEMA RULES:
 For type "evidence":

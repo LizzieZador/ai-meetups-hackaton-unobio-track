@@ -45,6 +45,8 @@ COVER AT MINIMUM:
    Clearly separate human findings from animal models. Never extrapolate animal model results to humans without an explicit qualification.
 5. Overall scientific thesis strength:
    Produce an inference claim assessing overall biological validation strength. Confidence CANNOT be "high" unless supported by direct human genetics (e.g. protective or causal human variants).
+6. Preclinical & Target Diligence Gaps (CRITICAL):
+   Produce at least 1-2 inference claims explicitly identifying unanswerable biological unknowns and what non-public/proprietary laboratory data is required (e.g. off-target kinome/proteome selectivity screens, tissue-specific target engagement assays, isoform crystal structures).
 
 STRICT SCHEMA RULES:
 For type "evidence":

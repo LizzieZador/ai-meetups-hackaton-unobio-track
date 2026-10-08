@@ -127,25 +127,15 @@ def _safe_agent_call(name: str, fn, *args, **kwargs) -> list[Claim]:
 
 
 def run_pipeline_markdown(indication: str, mechanism: str, extra_context: str = "") -> str:
-    """Convenience wrapper for callers (CLI) that just want the rendered report.
-
-    Renders, in order: a one-line-per-category plain-language summary (no LLM
-    needed to read it), then the raw source data + analogs (no LLM), then the
-    committee's LLM-based verdict/analysis.
-    """
+    """Convenience wrapper for callers (CLI) that just want the rendered report."""
     claims, cost_summary, sources = run_pipeline(indication, mechanism, extra_context)
-    analogs = extract_analogs(sources)
-
-    quick_section = render_quick_summary_markdown(build_quick_summary(claims, sources, analogs))
-    raw_section = render_raw_data_markdown(indication, mechanism, sources, analogs)
 
     cost_line = (
         f"Pipeline cost for this run: ~${cost_summary['approx_cost_usd']} "
         f"({cost_summary['calls']} calls, {cost_summary['model']}, "
         f"{cost_summary['input_tokens']} in / {cost_summary['output_tokens']} out tokens)"
     )
-    committee_section = render_report(indication, mechanism, claims, cost_summary=cost_line)
-    return quick_section + "\n\n---\n\n" + raw_section + "\n\n---\n\n" + committee_section
+    return render_report(indication, mechanism, claims, cost_summary=cost_line)
 
 
 def _write_trace(

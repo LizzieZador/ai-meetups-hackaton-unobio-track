@@ -94,8 +94,8 @@ COVER AT MINIMUM:
    Evaluate annual treatment cost benchmarks based on approved targeted small molecules or biologics in this or adjacent indications.
 4. Scientifically Interesting vs Commercially Valuable (MANDATORY DISTINCTION):
    Explicitly contrast scientific interest with commercial value. Explain whether this program addresses an attractive commercial market even if the underlying biology is completely sound (e.g. consider whether the patient pool is too niche, whether cheap generic SoC dominates, or whether administration/manufacturing burdens impair commercial viability).
-5. Critical Commercial Unknowns:
-   Identify commercial risks that could undermine the investment case (e.g. payer reimbursement hurdles, rapid competitor leapfrogging, diagnostic adoption friction).
+5. Critical Commercial Unknowns & Diligence Gaps (CRITICAL):
+   Identify commercial risks that could undermine the investment case (e.g. payer reimbursement hurdles, rapid competitor leapfrogging, diagnostic adoption friction, patent freedom-to-operate). For each, explicitly state what proprietary/non-public diligence is required (e.g. blinded KOL interviews, payer advisory boards, freedom-to-operate patent opinions, unredacted license agreements).
 6. Deterministic Market Model Assumptions:
    To support patient funnel and peak sales modeling, include claims proposing parameter assumptions for the market model across:
    - "prevalence_or_incidence": total patient population
