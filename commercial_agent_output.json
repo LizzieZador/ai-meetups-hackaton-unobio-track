@@ -7,8 +7,22 @@
       "claim": "Non-Small Cell Lung Cancer: prevalence 550000 and annual incidence 320000 in US+EU.",
       "type": "evidence",
       "section": "commercial_opportunity",
-      "source": "SEER Cancer Statistics / GLOBOCAN",
-      "date_accessed": "2026-10-06"
+      "source": "NCI SEER Cancer Statistics",
+      "date_accessed": "2026-10-09"
+    },
+    {
+      "claim": "AACT analysis for indication 'Non-Small Cell Lung Cancer' and queried intervention/target 'KRAS G12C'. 3 active trials, 2 inactive trials (total studies matching the queried intervention: 5). Phase distribution (total: 5): [Phase 1: 1, Phase 1/Phase 2: 3, Phase 3: 1]. Top NCT IDs by enrollment: NCT03600883, NCT04685135, NCT06300177, NCT05375994, NCT06130254. Median enrollment across all matched studies in the indication: Phase 2: no enrollment data; Phase 3: median 320 (n=1 trials). Most common primary outcomes across matched studies: Objective Response Rate (ORR) (3 trials); Incidence of Dose-Limiting Toxicities (DLTs) (1 trials); Progression-Free Survival (PFS) (1 trials).",
+      "type": "evidence",
+      "section": "competitive_landscape",
+      "source": "AACT flat-file dump",
+      "date_accessed": "2026-10-09"
+    },
+    {
+      "claim": "High competitive pressure in the 'Non-Small Cell Lung Cancer' indication. 3 active trials hinder patient recruitment for new clinical studies.",
+      "type": "inference",
+      "section": "competitive_landscape",
+      "reasoning": "Estimated based on aggregated AACT data on active trial counts.",
+      "confidence": "medium"
     }
   ],
   "financial_metrics": {

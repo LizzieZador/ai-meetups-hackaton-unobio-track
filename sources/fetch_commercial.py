@@ -375,9 +375,14 @@ def collect_commercial_sources(
     try:
         target_ctx = get_target_context(indication, mechanism)
         same_mech_drugs = target_ctx.get("known_drugs", [])
+        target_symbols = (
+            ([target_ctx.get("symbol")] if target_ctx.get("symbol") else [])
+            + target_ctx.get("synonyms", [])
+        )
     except Exception as e:
         notes.append(f"Failed to query target context for '{mechanism}': {e}")
         same_mech_drugs = []
+        target_symbols = []
 
     # 2. Fetch AACT competitor records
     try:
@@ -386,10 +391,14 @@ def collect_commercial_sources(
             intervention=mechanism,
             cutoff_date=cutoff_date,
             same_mechanism_drugs=same_mech_drugs,
+            target_symbols=target_symbols,
         ) or []
         competitive.extend(aact_records)
+        if not aact_records or any("AACT unavailable / 0 trials" in r.get("raw_snippet", "") for r in aact_records):
+            notes.append("AACT unavailable / 0 trials: No matching trials found or database unavailable.")
     except Exception as e:
         notes.append(f"AACT competitive search failed: {e}")
+        notes.append("AACT unavailable / 0 trials: Search encountered an exception.")
 
     # 3. Open Targets (lookahead protection if cutoff_date is specified)
     if cutoff_date:

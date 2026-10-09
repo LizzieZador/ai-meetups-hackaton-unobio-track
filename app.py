@@ -61,11 +61,17 @@ if submitted:
             items = sources.get(key, [])
             with st.expander(f"{SOURCE_TITLES[key]} — {len(items)} record(s)"):
                 if not items:
-                    st.write("_No data returned by this source for this query._")
-                for item in items:
-                    link = f"[{item['source']}]({item.get('url')})" if item.get("url") else item["source"]
-                    st.markdown(f"**{link}** (accessed {item.get('date_accessed')})")
-                    st.caption(item.get("raw_snippet", ""))
+                    if key == "aact":
+                        st.info("AACT unavailable / 0 trials")
+                    else:
+                        st.write("_No data returned by this source for this query._")
+                else:
+                    if key == "aact" and any("AACT unavailable / 0 trials" in (item.get("raw_snippet") or "") for item in items):
+                        st.info("AACT unavailable / 0 trials")
+                    for item in items:
+                        link = f"[{item['source']}]({item.get('url')})" if item.get("url") else item["source"]
+                        st.markdown(f"**{link}** (accessed {item.get('date_accessed')})")
+                        st.caption(item.get("raw_snippet", ""))
 
         analogs = extract_analogs(sources)
         with st.expander(f"Analogs / competing drugs — {len(analogs)}"):

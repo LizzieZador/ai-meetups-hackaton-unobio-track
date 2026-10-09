@@ -53,7 +53,13 @@ def render_raw_data_markdown(indication: str, mechanism: str, sources: dict, ana
         items = sources.get(key, [])
         lines.append(f"## {SOURCE_TITLES[key]} ({len(items)} record{'s' if len(items) != 1 else ''})")
         if not items:
-            lines.append("_No data returned by this source for this query._")
+            if key == "aact":
+                lines.append("_AACT unavailable / 0 trials._")
+            else:
+                lines.append("_No data returned by this source for this query._")
+        else:
+            if key == "aact" and any("AACT unavailable / 0 trials" in (item.get("raw_snippet") or "") for item in items):
+                lines.append("> **Notice:** AACT unavailable / 0 trials.")
         for item in items:
             link = f"[{item['source']}]({item.get('url')})" if item.get("url") else item["source"]
             lines.append(f"- **{link}** (accessed {item.get('date_accessed')})")

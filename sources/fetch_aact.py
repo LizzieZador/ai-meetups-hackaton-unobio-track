@@ -47,6 +47,14 @@ try:
 except ImportError:
     from cache import CACHE_DIR, _slug
 
+try:
+    from .fetch_opentargets import get_target_context
+except ImportError:
+    try:
+        from sources.fetch_opentargets import get_target_context
+    except ImportError:
+        get_target_context = None
+
 AACT_DIR = Path(__file__).resolve().parent.parent / "data" / "aact"
 
 STATEMENT_TIMEOUT_MS = 30000
@@ -210,6 +218,107 @@ def _lookup_opentargets_known_drugs(mechanism: str, indication: str) -> list:
     return []
 
 
+_STOP_WORDS_INTERVENTION = {
+    "inhibitor", "inhibitors", "antagonist", "antagonists", "agonist", "agonists",
+    "antibody", "antibodies", "blocker", "blockers", "therapy", "treatment",
+    "agent", "agents", "small molecule", "targeting", "targeted", "inhibition",
+}
+
+
+def _resolve_target_terms(
+    condition: str,
+    intervention: str,
+    same_mechanism_drugs: Optional[list] = None,
+    target_symbols: Optional[list] = None,
+) -> tuple[set[str], set[str]]:
+    """Derive drug names and target symbols/synonyms for matching clinical trials.
+
+    Searches by Open Targets known drug names and target symbols/synonyms rather
+    than matching only the raw mechanism string.
+
+    Returns:
+        (drug_terms, symbol_terms) as lower-case sets of strings.
+    """
+    drug_terms: set[str] = set()
+    symbol_terms: set[str] = set()
+
+    drugs_pool = list(same_mechanism_drugs or [])
+    if not drugs_pool:
+        drugs_pool = _lookup_opentargets_known_drugs(intervention, condition)
+
+    if get_target_context is not None and (not drugs_pool or not target_symbols):
+        try:
+            ctx = get_target_context(condition, intervention)
+            if not drugs_pool:
+                drugs_pool.extend(ctx.get("known_drugs", []))
+            if target_symbols is None:
+                target_symbols = []
+                if ctx.get("symbol"):
+                    target_symbols.append(ctx.get("symbol"))
+                target_symbols.extend(ctx.get("synonyms", []))
+        except Exception:
+            pass
+
+    for d in drugs_pool:
+        d_clean = str(d).strip().lower()
+        if len(d_clean) >= 3:
+            drug_terms.add(d_clean)
+
+    for s in (target_symbols or []):
+        s_clean = str(s).strip().lower()
+        if 3 <= len(s_clean) <= 35 and not s_clean.startswith("cellular"):
+            symbol_terms.add(s_clean)
+
+    # Clean tokens from raw intervention string (e.g. 'KRAS G12C inhibitor' -> 'kras g12c', 'kras')
+    raw_iv = (intervention or "").strip().lower()
+    cleaned_iv = raw_iv
+    for sw in sorted(_STOP_WORDS_INTERVENTION, key=len, reverse=True):
+        cleaned_iv = re.sub(rf"\b{re.escape(sw)}\b", "", cleaned_iv).strip()
+
+    if cleaned_iv and len(cleaned_iv) >= 3:
+        symbol_terms.add(cleaned_iv)
+        for part in cleaned_iv.split():
+            if len(part) >= 3 and not part.isdigit():
+                symbol_terms.add(part)
+
+    return drug_terms, symbol_terms
+
+
+def _matches_target_intervention(name: str, drug_terms: set[str], symbol_terms: set[str]) -> bool:
+    """Check if intervention name matches known target drug names or symbols."""
+    if not name:
+        return False
+    name_lower = name.lower()
+    for d in drug_terms:
+        if d in name_lower:
+            return True
+    for s in symbol_terms:
+        if re.search(rf"\b{re.escape(s)}\b", name_lower):
+            return True
+    return False
+
+
+def _matches_title_fallback(
+    title: str,
+    drug_terms: set[str],
+    symbol_terms: set[str],
+    raw_intervention: str,
+) -> bool:
+    """Fallback search in study brief_title if intervention names didn't match."""
+    if not title:
+        return False
+    title_lower = title.lower()
+    for d in drug_terms:
+        if d in title_lower:
+            return True
+    for s in symbol_terms:
+        if re.search(rf"\b{re.escape(s)}\b", title_lower):
+            return True
+    if raw_intervention and raw_intervention.lower() in title_lower:
+        return True
+    return False
+
+
 # ----------------------------------------------------------------------------
 # public API
 # ----------------------------------------------------------------------------
@@ -220,13 +329,15 @@ def fetch_aact(
     same_mechanism_drugs: Optional[list] = None,
     own_program_drug: Optional[str] = None,
     known_mechanism_drugs: Optional[list] = None,  # old name, kept for compatibility
+    target_symbols: Optional[list] = None,
 ) -> Optional[list]:
     """Pipeline-shaped source: a list of {source, url, date_accessed, raw_snippet}
-    records, or None if AACT is unreachable (neither the live DB nor the local
-    flat-files are available) — the caller must not crash the pipeline on None.
+    records, or fallback note if AACT is unreachable (neither the live DB nor the local
+    flat-files are available).
 
     same_mechanism_drugs: drugs with the same mechanism (from Open Targets/ChEMBL).
     own_program_drug: optional; only if given are its sponsors tagged "own_program".
+    target_symbols: optional gene symbol and synonyms from Open Targets.
     """
     _validate_cutoff(cutoff_date)
     if same_mechanism_drugs is None:
@@ -235,9 +346,12 @@ def fetch_aact(
         same_mechanism_drugs = _lookup_opentargets_known_drugs(intervention, condition)
 
     mech_sig = hashlib.sha1(
-        "|".join(sorted(str(d).lower() for d in same_mechanism_drugs)).encode("utf-8")
+        "|".join(sorted(str(d).lower() for d in (same_mechanism_drugs or []))).encode("utf-8")
     ).hexdigest()[:8]
-    key = f"{condition}__{intervention}__{cutoff_date or 'all'}__{mech_sig}__{own_program_drug or ''}"
+    sym_sig = hashlib.sha1(
+        "|".join(sorted(str(s).lower() for s in (target_symbols or []))).encode("utf-8")
+    ).hexdigest()[:8]
+    key = f"{condition}__{intervention}__{cutoff_date or 'all'}__{mech_sig}__{sym_sig}__{own_program_drug or ''}"
     cache_file = CACHE_DIR / (
         "aact_" + re.sub(r"\W+", "_", key)[:80] + "_" + hashlib.md5(key.encode("utf-8")).hexdigest()[:8] + ".json"
     )
@@ -254,9 +368,16 @@ def fetch_aact(
         cutoff_date=cutoff_date,
         same_mechanism_drugs=same_mechanism_drugs,
         own_program_drug=own_program_drug,
+        target_symbols=target_symbols,
     )
     if analysis is None:
-        return None  # never cache a failure
+        today = datetime.date.today().isoformat()
+        return [{
+            "source": "AACT (Aggregate Analysis of ClinicalTrials.gov)",
+            "url": _search_url(condition, intervention),
+            "date_accessed": today,
+            "raw_snippet": "AACT unavailable / 0 trials: Live database connection not established and no local data dump found.",
+        }]
 
     records = analysis["records"]
     try:
@@ -272,13 +393,22 @@ def get_competitors_from_aact(
     cutoff_date: Optional[str] = None,
     same_mechanism_drugs: Optional[list] = None,
     own_program_drug: Optional[str] = None,
+    target_symbols: Optional[list] = None,
 ) -> Optional[dict]:
     """Full analysis dict (includes the pipeline "records" list). Live DB first,
     then the local flat-file dump. None if neither is available."""
-    live = _query_live(condition, intervention, cutoff_date, same_mechanism_drugs, own_program_drug)
+    live = _query_live(
+        condition, intervention, cutoff_date=cutoff_date,
+        same_mechanism_drugs=same_mechanism_drugs, own_program_drug=own_program_drug,
+        target_symbols=target_symbols,
+    )
     if live is not None:
         return live
-    return _query_flatfile(condition, intervention, cutoff_date, same_mechanism_drugs, own_program_drug)
+    return _query_flatfile(
+        condition, intervention, cutoff_date=cutoff_date,
+        same_mechanism_drugs=same_mechanism_drugs, own_program_drug=own_program_drug,
+        target_symbols=target_symbols,
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -304,7 +434,7 @@ def _build_live_sql(cutoff_date: Optional[str], with_groups: bool) -> str:
             JOIN ctgov.conditions c ON c.nct_id = s.nct_id
             LEFT JOIN ctgov.interventions i ON i.nct_id = s.nct_id
             WHERE (c.name ILIKE %s OR c.downcase_name ILIKE %s)
-              AND (i.name ILIKE %s OR s.brief_title ILIKE %s)
+              AND (i.name ILIKE ANY(%s) OR s.brief_title ILIKE ANY(%s))
               {cutoff_clause}
             ORDER BY s.nct_id
             LIMIT {LIVE_ROW_LIMIT}
@@ -314,10 +444,10 @@ def _build_live_sql(cutoff_date: Optional[str], with_groups: bool) -> str:
             FROM ctgov.studies s
             JOIN ctgov.conditions c ON c.nct_id = s.nct_id
             WHERE (c.name ILIKE %s OR c.downcase_name ILIKE %s)
-              AND s.brief_title NOT ILIKE %s
+              AND s.brief_title NOT ILIKE ANY(%s)
               AND NOT EXISTS (
                   SELECT 1 FROM ctgov.interventions i2
-                  WHERE i2.nct_id = s.nct_id AND i2.name ILIKE %s
+                  WHERE i2.nct_id = s.nct_id AND i2.name ILIKE ANY(%s)
               )
               {cutoff_clause}
             ORDER BY s.nct_id
@@ -351,8 +481,14 @@ def _build_live_sql(cutoff_date: Optional[str], with_groups: bool) -> str:
     """
 
 
-def _query_live(condition, intervention, cutoff_date=None, same_mechanism_drugs=None,
-                own_program_drug=None) -> Optional[dict]:
+def _query_live(
+    condition: str,
+    intervention: str,
+    cutoff_date: Optional[str] = None,
+    same_mechanism_drugs: Optional[list] = None,
+    own_program_drug: Optional[str] = None,
+    target_symbols: Optional[list] = None,
+) -> Optional[dict]:
     host = os.environ.get("AACT_DB_HOST")
     if not host:
         return None
@@ -374,9 +510,18 @@ def _query_live(condition, intervention, cutoff_date=None, same_mechanism_drugs=
     except psycopg2.Error:
         return None
 
-    lc, li = _like(condition), _like(intervention)
+    drug_terms, symbol_terms = _resolve_target_terms(
+        condition, intervention, same_mechanism_drugs, target_symbols
+    )
+    search_patterns = [_like(t) for t in (drug_terms | symbol_terms)] or [_like(intervention)]
+    title_patterns = list(set(search_patterns + [_like(intervention)]))
+
+    lc = _like(condition)
     cut = [cutoff_date] if cutoff_date else []
-    params = tuple([lc, lc, li, li] + cut + [lc, lc, li, li] + cut)
+    params = tuple(
+        [lc, lc, search_patterns, title_patterns] + cut
+        + [lc, lc, title_patterns, search_patterns] + cut
+    )
 
     raw_records = []
     outcome_rows = None
@@ -425,11 +570,18 @@ def _query_live(condition, intervention, cutoff_date=None, same_mechanism_drugs=
         "AACT live database (aact-db.ctti-clinicaltrials.org)",
         same_mechanism_drugs=same_mechanism_drugs, own_program_drug=own_program_drug,
         cutoff_date=cutoff_date, primary_outcome_rows=outcome_rows, row_limit=LIVE_ROW_LIMIT,
+        target_drug_terms=drug_terms, target_symbol_terms=symbol_terms,
     )
 
 
-def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_drugs=None,
-                    own_program_drug=None) -> Optional[dict]:
+def _query_flatfile(
+    condition: str,
+    intervention: str,
+    cutoff_date: Optional[str] = None,
+    same_mechanism_drugs: Optional[list] = None,
+    own_program_drug: Optional[str] = None,
+    target_symbols: Optional[list] = None,
+) -> Optional[dict]:
     conditions_file = AACT_DIR / "conditions.txt"
     studies_file = AACT_DIR / "studies.txt"
     interventions_file = AACT_DIR / "interventions.txt"
@@ -440,11 +592,17 @@ def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_dr
         return None
 
     source = "AACT flat-file dump"
-    common = dict(same_mechanism_drugs=same_mechanism_drugs, own_program_drug=own_program_drug,
-                  cutoff_date=cutoff_date)
+    common = dict(
+        same_mechanism_drugs=same_mechanism_drugs,
+        own_program_drug=own_program_drug,
+        cutoff_date=cutoff_date,
+    )
     _raise_csv_limit()
     try:
-        cond_l, iv = condition.lower(), intervention.lower()
+        cond_l = condition.lower()
+        drug_terms, symbol_terms = _resolve_target_terms(
+            condition, intervention, same_mechanism_drugs, target_symbols
+        )
 
         condition_ncts = set()
         with open(conditions_file, mode="r", encoding="utf-8") as f:
@@ -454,7 +612,11 @@ def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_dr
                     condition_ncts.add(row.get("nct_id"))
 
         if not condition_ncts:
-            return _process_and_summarize([], condition, intervention, source, **common)
+            return _process_and_summarize(
+                [], condition, intervention, source,
+                target_drug_terms=drug_terms, target_symbol_terms=symbol_terms,
+                **common
+            )
 
         drug_map: dict = {}  # nct_id -> {drug name: intervention_type}
         target_ncts = set()
@@ -466,7 +628,7 @@ def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_dr
                         name = (row.get("name") or "").strip()
                         if name:
                             drug_map.setdefault(nct, {})[name] = row.get("intervention_type") or ""
-                            if iv in name.lower():
+                            if _matches_target_intervention(name, drug_terms, symbol_terms):
                                 target_ncts.add(nct)
 
         sponsor_map: dict = {}
@@ -491,20 +653,29 @@ def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_dr
                     continue
 
                 title = row.get("brief_title") or ""
-                is_target = nct in target_ncts or iv in title.lower()
+                is_target = (nct in target_ncts) or _matches_title_fallback(
+                    title, drug_terms, symbol_terms, intervention
+                )
                 drug_items = list(drug_map.get(nct, {}).items()) or [("", "")]
                 sponsors = sponsor_map.get(nct) or {"Unknown"}
 
                 for drug, dtype in drug_items:
                     for sp in sponsors:
                         raw_records.append({
-                            "nct_id": nct, "brief_title": title,
+                            "nct_id": nct,
+                            "brief_title": title,
                             "overall_status": row.get("overall_status", ""),
-                            "phase": row.get("phase", ""), "enrollment": row.get("enrollment"),
-                            "why_stopped": row.get("why_stopped", ""), "start_date": start_date,
-                            "is_target_study": is_target, "sponsor_name": sp,
-                            "drug_name": drug, "drug_type": dtype,
-                            "group_id": None, "group_type": "", "group_title": "",
+                            "phase": row.get("phase", ""),
+                            "enrollment": row.get("enrollment"),
+                            "why_stopped": row.get("why_stopped", ""),
+                            "start_date": start_date,
+                            "is_target_study": is_target,
+                            "sponsor_name": sp,
+                            "drug_name": drug,
+                            "drug_type": dtype,
+                            "group_id": None,
+                            "group_type": "",
+                            "group_title": "",
                         })
 
         outcome_rows = None
@@ -519,7 +690,10 @@ def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_dr
 
         return _process_and_summarize(
             raw_records, condition, intervention, source,
-            primary_outcome_rows=outcome_rows, **common,
+            primary_outcome_rows=outcome_rows,
+            target_drug_terms=drug_terms,
+            target_symbol_terms=symbol_terms,
+            **common,
         )
     except (OSError, KeyError, ValueError, csv.Error):
         return None
@@ -528,7 +702,12 @@ def _query_flatfile(condition, intervention, cutoff_date=None, same_mechanism_dr
 # ----------------------------------------------------------------------------
 # analysis
 # ----------------------------------------------------------------------------
-def _classify_study_drugs(study: dict, iv: str):
+def _classify_study_drugs(
+    study: dict,
+    iv: str,
+    target_drug_terms: Optional[set] = None,
+    target_symbol_terms: Optional[set] = None,
+):
     """Return (comparators, partners, other_arm_drugs, alternatives) as sets of drug
     names for ONE study, so every drug is counted once per trial."""
     arms = study["arms"]
@@ -536,7 +715,16 @@ def _classify_study_drugs(study: dict, iv: str):
     has_groups = any(a[2] for a in arms)
 
     def is_target_drug(d: str) -> bool:
-        return bool(iv) and iv in d.lower()
+        if not d:
+            return False
+        dl = d.lower()
+        if bool(iv) and iv in dl:
+            return True
+        if target_drug_terms and any(t in dl for t in target_drug_terms):
+            return True
+        if target_symbol_terms and any(re.search(rf"\b{re.escape(s)}\b", dl) for s in target_symbol_terms):
+            return True
+        return False
 
     if study["is_target"]:
         if has_groups:
@@ -597,6 +785,8 @@ def _process_and_summarize(
     cutoff_date: Optional[str] = None,
     primary_outcome_rows: Optional[list] = None,
     row_limit: Optional[int] = None,
+    target_drug_terms: Optional[set] = None,
+    target_symbol_terms: Optional[set] = None,
 ) -> dict:
     today = datetime.date.today().isoformat()
     iv = intervention.lower().strip()
@@ -664,7 +854,9 @@ def _process_and_summarize(
     for s in studies.values():
         for d in s["drugs"]:
             drug_phases.setdefault(d.lower(), set()).add(s["phase"])
-        comp, part, oth, alt = _classify_study_drugs(s, iv)
+        comp, part, oth, alt = _classify_study_drugs(
+            s, iv, target_drug_terms=target_drug_terms, target_symbol_terms=target_symbol_terms
+        )
         for d in comp:
             bump(comparators, d)
         for d in part:
@@ -747,7 +939,7 @@ def _process_and_summarize(
     # 9. Early terminated / withdrawn / suspended trials (hidden when a cutoff is set)
     failed = []
     if not hide_future:
-        for s in studies.values():
+        for s in target_studies:
             status_key = re.sub(r"[\s,]+", "_", s["status"].upper())
             if status_key in FAILED_STATUSES:
                 failed.append(s)
@@ -781,7 +973,7 @@ def _process_and_summarize(
     # --- record A: aggregate
     a = [f"AACT analysis for indication '{condition}' and queried intervention/target '{intervention}'."]
     if total_target == 0:
-        a.append("No trials matched the queried intervention in this indication in the queried dataset.")
+        a.append("AACT unavailable / 0 trials: No trials matched the queried intervention in this indication in the queried dataset.")
     elif hide_future:
         a.append(
             f"Evidence restricted to trials started before {cutoff_date}; later status information is hidden. "

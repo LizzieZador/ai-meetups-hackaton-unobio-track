@@ -55,7 +55,7 @@ CARDS: list[dict] = [
         "title": "Existing competitive landscape",
         "subtitle": "Approved products and late-stage pipeline",
         "claim_sections": ["competitive_landscape"],
-        "raw_sources": ["opentargets"],
+        "raw_sources": ["opentargets", "aact"],
         "include_analogs": True,
     },
     {
@@ -136,6 +136,14 @@ def build_cards(claims: list[Claim], sources: dict, analogs: list[dict]) -> list
                 {"kind": "analog", "name": d.get("name"), "stage": d.get("stage") or "stage unknown"}
                 for d in analogs
             ]
+        if spec["id"] == "regulatory_timeline" and not items:
+            items.append({
+                "kind": "record",
+                "source": "AACT",
+                "url": "",
+                "date_accessed": "",
+                "raw_snippet": "AACT unavailable / 0 trials",
+            })
         cards.append({
             "id": spec["id"],
             "number": number,

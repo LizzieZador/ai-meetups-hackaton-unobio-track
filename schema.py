@@ -83,11 +83,16 @@ SECTION_ALIASES: dict[str, str] = {
     "recommendations": "recommendation",
     "investment_recommendation": "recommendation",
     "investment_verdict": "recommendation",
+    "executive_summary": "recommendation",
+    "valuation": "recommendation",
+    "rnpv": "recommendation",
+    "rnpv_scenarios": "recommendation",
     # scientific_thesis
     "scientific": "scientific_thesis",
     "science": "scientific_thesis",
     "scientific_validation": "scientific_thesis",
     "biological_validation": "scientific_thesis",
+    "biology": "scientific_thesis",
     # human_translation_thesis
     "human_translation": "human_translation_thesis",
     "translation": "human_translation_thesis",
@@ -97,6 +102,7 @@ SECTION_ALIASES: dict[str, str] = {
     "clinical_development": "clinical_development_plan",
     "clinical_plan": "clinical_development_plan",
     "clinical_trials": "clinical_development_plan",
+    "trial_design": "clinical_development_plan",
     # competitive_landscape
     "competition": "competitive_landscape",
     "competitors": "competitive_landscape",
@@ -110,21 +116,27 @@ SECTION_ALIASES: dict[str, str] = {
     "capital_requirement": "capital_required",
     "capital_needed": "capital_required",
     "capital_requirements": "capital_required",
+    "financing": "capital_required",
     # key_risks
     "key_risk": "key_risks",
     "risk": "key_risks",
     "risks": "key_risks",
     "failure_modes": "key_risks",
     "key_risks_and_failure_modes": "key_risks",
+    "risks_and_failure_modes": "key_risks",
+    "risk_analysis": "key_risks",
     # critical_unknowns
     "unknown": "critical_unknowns",
     "unknowns": "critical_unknowns",
     "critical_unknown": "critical_unknowns",
+    "key_unknowns": "critical_unknowns",
     # diligence_questions
     "diligence_question": "diligence_questions",
     "diligence": "diligence_questions",
     "questions": "diligence_questions",
     "highest_value_diligence_questions": "diligence_questions",
+    "due_diligence": "diligence_questions",
+    "due_diligence_questions": "diligence_questions",
 }
 
 _dropped_claims_log: list[dict] = []
@@ -166,7 +178,9 @@ def parse_claims(
     """Parse + validate claim dicts coming back from an LLM call.
 
     Tolerates extra keys from the LLM or upstream collectors by filtering
-    to Claim dataclass fields. Logs any dropped claims with their reason.
+    to Claim dataclass fields. Normalizes casing and aliases, rescues
+    explanation/rationale into reasoning, defaults missing inference confidence
+    to 'medium', and logs any dropped claims with their reason.
     """
     claims = []
     known_fields = set(Claim.__dataclass_fields__.keys())
@@ -176,8 +190,49 @@ def parse_claims(
             log_dropped_claim(stage, item, f"Claim #{idx + 1}: item is not a dict ({type(item).__name__})")
             continue
 
+        item_copy = dict(item)
+
+        # Extract claim text from common alternate keys if missing
+        claim_text = (
+            item_copy.get("claim")
+            or item_copy.get("statement")
+            or item_copy.get("text")
+            or item_copy.get("title")
+        )
+        if claim_text:
+            item_copy["claim"] = str(claim_text).strip()
+
+        # Extract reasoning from common alternate keys if missing
+        reasoning = (
+            item_copy.get("reasoning")
+            or item_copy.get("explanation")
+            or item_copy.get("rationale")
+            or item_copy.get("justification")
+        )
+
+        # Infer type if omitted
+        raw_type = str(item_copy.get("type") or "").strip().lower()
+        if not raw_type:
+            raw_type = "evidence" if item_copy.get("source") else "inference"
+        item_copy["type"] = raw_type
+
+        # Normalize confidence for inference claims
+        raw_conf = str(item_copy.get("confidence") or "").strip().lower()
+        if raw_type == "inference" and raw_conf not in ("low", "medium", "high"):
+            raw_conf = "medium"
+        if raw_conf:
+            item_copy["confidence"] = raw_conf
+
+        # Normalize section
+        raw_sec = str(item_copy.get("section") or "").strip().lower()
+        normalized_sec = SECTION_ALIASES.get(raw_sec, raw_sec)
+        item_copy["section"] = normalized_sec
+
+        if reasoning is not None:
+            item_copy["reasoning"] = str(reasoning).strip()
+
         # Filter out extra unexpected keys to tolerate model extensions
-        filtered_item = {k: v for k, v in item.items() if k in known_fields}
+        filtered_item = {k: v for k, v in item_copy.items() if k in known_fields}
 
         try:
             c = Claim(**filtered_item)
