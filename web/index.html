@@ -27,7 +27,8 @@
           <line x1="8" y1="3.5" x2="8" y2="16.5" stroke="currentColor"/>
         </svg>
       </button>
-      <input id="query" type="text" placeholder="Drug, indication or mechanism" autocomplete="off">
+      <input id="indication" type="text" placeholder="Indication, e.g. Non-Small Cell Lung Cancer" autocomplete="off">
+      <input id="mechanism" type="text" placeholder="Mechanism / Target, e.g. KRAS G12C" autocomplete="off">
       <button id="evaluate" type="submit" disabled>Evaluate</button>
     </form>
     <section id="content"><p class="empty">Search a drug, an indication or a mechanism to build an evaluation.</p></section>
@@ -39,6 +40,7 @@
       <div id="modal-body"></div>
     </div>
   </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

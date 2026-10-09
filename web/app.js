@@ -10,15 +10,18 @@ const link = (label, url) => {
   return href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>` : esc(label);
 };
 
-let searches = loadHistory(); // [{query, at, report}]
+let searches = loadHistory(); // [{indication, mechanism, at, report}]
 let current = null; // the report on screen, so the expand buttons can find their card
 
 function loadHistory() {
   try {
     const list = JSON.parse(localStorage.getItem(KEY));
-    // Entries saved by an older build of this page have a different report shape
-    // and would break rendering — drop anything that isn't a card report.
-    return Array.isArray(list) ? list.filter((s) => s && Array.isArray(s.report?.cards)) : [];
+    // Entries saved by an older build of this page (single combined "query",
+    // or quick_summary/verdict_claims-shaped reports) have a different shape
+    // and would break rendering — drop anything that isn't the current shape.
+    return Array.isArray(list)
+      ? list.filter((s) => s && s.indication && s.mechanism && Array.isArray(s.report?.cards))
+      : [];
   } catch (e) {
     return [];
   }
@@ -53,7 +56,11 @@ function filledCount(report) {
   return (report.cards || []).filter((c) => c.items.length).length;
 }
 
-function renderHistory(active) {
+function historyLabel(s) {
+  return `${s.mechanism} — ${s.indication}`;
+}
+
+function renderHistory(activeKey) {
   const ul = $("history");
   ul.innerHTML = "";
   if (!searches.length) {
@@ -61,16 +68,18 @@ function renderHistory(active) {
     return;
   }
   searches.forEach((s) => {
+    const key = `${s.indication}\u0000${s.mechanism}`;
     const li = document.createElement("li");
-    li.className = s.query === active ? "active" : "";
-    li.innerHTML = `<span class="q">${esc(s.query)}</span>
+    li.className = key === activeKey ? "active" : "";
+    li.innerHTML = `<span class="q">${esc(historyLabel(s))}</span>
       <span class="when">${esc(whenLabel(s.at))} · ${filledCount(s.report)}/${s.report.cards.length}</span>`;
-    li.title = s.query;
+    li.title = historyLabel(s);
     li.onclick = () => {
-      $("query").value = s.query;
+      $("indication").value = s.indication;
+      $("mechanism").value = s.mechanism;
       $("evaluate").disabled = false;
       show(s.report);
-      renderHistory(s.query);
+      renderHistory(key);
     };
     ul.appendChild(li);
   });
@@ -101,6 +110,50 @@ function renderItems(card) {
   }</p>`;
 }
 
+function renderClaimsOnly(card) {
+  const claimItems = (card.items || []).filter((i) => i.kind === "claim");
+  if (!claimItems.length) return "";
+  return `<div class="items-below-table">${claimItems.map(renderItem).join("")}</div>`;
+}
+
+function renderTableCell(value) {
+  if (value && typeof value === "object" && "text" in value) {
+    return value.url ? link(value.text, value.url) : esc(value.text);
+  }
+  const display = value === undefined || value === null || value === "" ? "Not available" : value;
+  const isNA = display === "Not available";
+  return `<span${isNA ? ' class="na"' : ""}>${esc(display)}</span>`;
+}
+
+function renderTable(card) {
+  if (!card.rows || !card.rows.length) {
+    return `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
+  }
+  const head = `<tr>${card.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const body = card.rows
+    .map((row) => `<tr>${card.columns.map((c) => `<td>${renderTableCell(row[c])}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table class="card-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function renderCardBody(card, chartIdPrefix) {
+  let inner;
+  if (card.view === "table") {
+    inner = renderTable(card) + (card.show_claims_below ? renderClaimsOnly(card) : "");
+  } else if (card.view === "graph") {
+    inner = card.chart
+      ? `<div class="chart-wrap"><canvas id="${chartIdPrefix}-${esc(card.id)}"></canvas></div>`
+      : `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
+  } else {
+    inner = renderItems(card);
+  }
+  return `<div class="items">${inner}</div>`;
+}
+
+function gapNote(card) {
+  return card.data_gap_note ? `<p class="data-gap-note">${esc(card.data_gap_note)}</p>` : "";
+}
+
 function cardHeading(card) {
   return `<h2><span class="n">${card.number}</span>${esc(card.title)}</h2>
     ${card.subtitle ? `<div class="sub">${esc(card.subtitle)}</div>` : ""}`;
@@ -108,6 +161,26 @@ function cardHeading(card) {
 
 function sourcesLabel(card) {
   return `${card.sources.length} source${card.sources.length === 1 ? "" : "s"}`;
+}
+
+const chartInstances = {};
+
+function mountChart(canvasId, chartConfig) {
+  if (chartInstances[canvasId]) {
+    chartInstances[canvasId].destroy();
+    delete chartInstances[canvasId];
+  }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  if (typeof Chart === "undefined") {
+    // Fails silently otherwise (an empty canvas looks identical to "no data") —
+    // this is almost always the Chart.js CDN script failing to load (network
+    // block, ad blocker, offline), not a backend data problem.
+    canvas.closest(".chart-wrap").innerHTML =
+      '<p class="placeholder">Chart library failed to load (check network/ad blocker) — raw data is still listed under Sources below.</p>';
+    return;
+  }
+  chartInstances[canvasId] = new Chart(canvas, chartConfig);
 }
 
 function renderCard(card) {
@@ -120,7 +193,8 @@ function renderCard(card) {
         </svg>
       </button>
     </div>
-    <div class="items">${renderItems(card)}</div>
+    ${gapNote(card)}
+    ${renderCardBody(card, "chart-grid")}
     <div class="card-foot">${sourcesLabel(card)}</div>
   </article>`;
 }
@@ -133,12 +207,16 @@ function openCard(card) {
         .join("")}</ul></div>`
     : "";
   $("modal-body").innerHTML = `${cardHeading(card)}
-    <div class="items">${renderItems(card)}</div>
+    ${gapNote(card)}
+    ${renderCardBody(card, "chart-modal")}
     ${sources}
     <div class="card-foot">${sourcesLabel(card)}</div>`;
   $("modal-body").querySelector("h2").id = "modal-title";
   $("modal").classList.remove("hidden");
   $("modal-close").focus();
+  if (card.view === "graph" && card.chart) {
+    mountChart(`chart-modal-${card.id}`, card.chart);
+  }
 }
 
 function closeModal() {
@@ -146,109 +224,64 @@ function closeModal() {
   $("modal-body").innerHTML = "";
 }
 
-function renderQuickSummary(rows) {
-  if (!rows || !rows.length) return "";
-  const lines = rows
-    .map((r) => {
-      const hasDetail = !!r.detail_text || (r.detail_sources || []).length > 0;
-      // The full sentence always finishes on its own; the toggle is a
-      // separate element after it, never appended mid-text.
-      const toggle = hasDetail
-        ? `<button type="button" class="qs-more" data-qs="${esc(r.id)}">view more info</button>`
-        : "";
-      return `<li>
-        <div class="qs-line"><strong>${esc(r.label)}:</strong> ${esc(r.text)}</div>
-        ${toggle}
-        <div class="qs-detail hidden" id="qs-detail-${esc(r.id)}"></div>
-      </li>`;
-    })
-    .join("");
-  return `<section class="quick-summary">
-    <h2>At a glance <span class="sub">plain-language summary, straight from the connected data sources</span></h2>
-    <ul>${lines}</ul>
-  </section>`;
-}
-
-function renderQuickDetail(row) {
-  const paragraph = row.detail_text ? `<p class="qs-detail-text">${esc(row.detail_text)}</p>` : "";
-  const sources = (row.detail_sources || []).length
-    ? `<p class="qs-detail-sources">Source${row.detail_sources.length > 1 ? "s" : ""}: ${row.detail_sources
-        .map((s) => link(s.source, s.url))
-        .join(", ")}</p>`
-    : "";
-  return paragraph + sources;
-}
-
-function toggleQuickSummaryDetail(id) {
-  const row = (current.quick_summary || []).find((r) => r.id === id);
-  const box = document.getElementById(`qs-detail-${id}`);
-  const btn = document.querySelector(`.qs-more[data-qs="${id}"]`);
-  if (!row || !box) return;
-  const isHidden = box.classList.contains("hidden");
-  if (isHidden) {
-    box.innerHTML = renderQuickDetail(row);
-    box.classList.remove("hidden");
-    if (btn) btn.textContent = "hide info";
-  } else {
-    box.classList.add("hidden");
-    if (btn) btn.textContent = "view more info";
-  }
-}
-
 function show(report) {
   current = report;
   const v = report.verdict;
   const vClass = v === "Do Not Invest" ? "no" : v === "Conditional" ? "cond" : "";
-  const verdictBlock = report.verdict_claims.length
-    ? `<section class="verdict-block"><h2>Committee verdict &amp; diligence questions</h2>
-         <div class="items">${report.verdict_claims.map(renderItem).join("")}</div></section>`
-    : "";
   const c = report.cost || {};
   $("content").innerHTML = `
     <div class="report-head">
-      <h1>${esc(report.query)}</h1><span class="label">Evaluation</span>
+      <h1>${esc(report.mechanism)} <span class="label">in</span> ${esc(report.indication)}</h1>
       ${v ? `<span class="verdict ${vClass}">${esc(v)}</span>` : ""}
+      ${report.verdict_reasoning ? `<p class="verdict-reasoning">${esc(report.verdict_reasoning)}</p>` : ""}
     </div>
-    ${renderQuickSummary(report.quick_summary)}
-    ${verdictBlock}
     <div class="grid">${report.cards.map(renderCard).join("")}</div>
     <p class="cost">~$${esc(c.approx_cost_usd)} · ${esc(c.calls)} calls · ${esc(c.model)}</p>`;
   $("content").querySelectorAll(".expand").forEach((b) => {
     b.onclick = () => openCard(current.cards.find((x) => x.id === b.dataset.card));
   });
-  $("content").querySelectorAll(".qs-more").forEach((b) => {
-    b.onclick = () => toggleQuickSummaryDetail(b.dataset.qs);
-  });
+  report.cards
+    .filter((card) => card.view === "graph" && card.chart)
+    .forEach((card) => mountChart(`chart-grid-${card.id}`, card.chart));
 }
 
-async function evaluate(query) {
+async function evaluate(indication, mechanism) {
   $("evaluate").disabled = true;
   $("content").innerHTML = '<p class="loading">Collecting sources and running the committee… this can take a minute.</p>';
   try {
     const res = await fetch("/api/evaluate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ indication, mechanism }),
     });
     const data = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
     if (!res.ok || data.error) throw new Error(data.error || `Server error (${res.status})`);
-    searches = [{ query, at: Date.now(), report: data }, ...searches.filter((s) => s.query !== query)];
+    searches = [
+      { indication, mechanism, at: Date.now(), report: data },
+      ...searches.filter((s) => !(s.indication === indication && s.mechanism === mechanism)),
+    ];
     saveHistory();
-    renderHistory(query);
+    renderHistory(`${indication}\u0000${mechanism}`);
     show(data);
   } catch (e) {
     $("content").innerHTML = `<p class="error">${esc(e.message)}</p>`;
   } finally {
-    $("evaluate").disabled = !$("query").value.trim();
+    $("evaluate").disabled = !($("indication").value.trim() && $("mechanism").value.trim());
   }
+}
+
+function updateEvaluateEnabled() {
+  $("evaluate").disabled = !($("indication").value.trim() && $("mechanism").value.trim());
 }
 
 $("search").onsubmit = (e) => {
   e.preventDefault();
-  const q = $("query").value.trim();
-  if (q && !$("evaluate").disabled) evaluate(q);
+  const indication = $("indication").value.trim();
+  const mechanism = $("mechanism").value.trim();
+  if (indication && mechanism && !$("evaluate").disabled) evaluate(indication, mechanism);
 };
-$("query").oninput = () => { $("evaluate").disabled = !$("query").value.trim(); };
+$("indication").oninput = updateEvaluateEnabled;
+$("mechanism").oninput = updateEvaluateEnabled;
 $("toggle-sidebar").onclick = () => { $("sidebar").classList.add("collapsed"); $("open-sidebar").classList.remove("hidden"); };
 $("open-sidebar").onclick = () => { $("sidebar").classList.remove("collapsed"); $("open-sidebar").classList.add("hidden"); };
 $("modal-close").onclick = closeModal;
