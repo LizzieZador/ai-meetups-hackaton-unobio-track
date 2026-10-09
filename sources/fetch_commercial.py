@@ -243,11 +243,13 @@ def get_pricing_analogues(indication: str, cutoff_date: Optional[str] = None) ->
                     or row.get("Drug_Name")
                     or f"Standard-of-care analogue for {raw_ind}"
                 )
-                source_name = (
-                    row.get("Pricing_Source")
-                    or row.get("Primary_Epidemiology_Source")
-                    or "Pharmaceutical Pricing Benchmark"
-                )
+                # Do NOT fall back to Primary_Epidemiology_Source here — that column
+                # names the epidemiology source, not the pricing one; borrowing it
+                # mislabels two distinct facts (prevalence vs. drug price) under the
+                # same source name, which collapses them into one entry wherever
+                # sources are deduplicated/grounded by name (e.g. pipeline.py,
+                # schema.parse_claims's valid_sources check).
+                source_name = row.get("Pricing_Source") or "Pharmaceutical Pricing Benchmark"
                 region = row.get("Region") or "US"
 
                 is_evidence = bool(_is_valid_url(pricing_url) and year_val is not None)

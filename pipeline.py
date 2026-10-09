@@ -19,17 +19,14 @@ load_dotenv()
 from agents.chair_agent import chair_agent
 from agents.clinical_agent import clinical_agent
 from agents.commercial_agent import commercial_agent
-from agents.scientific_agent import scientific_agent
+from agents.scientific_agent import collect_scientific_sources, scientific_agent
 from llm import get_usage_summary, reset_usage_log
 from quick_summary import build_quick_summary, render_quick_summary_markdown
 from raw_data import collect_valid_sources, extract_analogs, render_raw_data_markdown
 from report import render_report
 from schema import Claim
-from sources.fetch_aact import fetch_aact
-from sources.fetch_commercial import fetch_commercial
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
-from sources.fetch_opentargets import fetch_opentargets
-from sources.fetch_pubmed import fetch_pubmed
+from sources.fetch_commercial import collect_commercial_sources
 
 REPORTS_DIR = Path(__file__).resolve().parent / "data" / "reports"
 
@@ -37,15 +34,61 @@ REPORTS_DIR = Path(__file__).resolve().parent / "data" / "reports"
 def collect_sources(indication: str, mechanism: str) -> dict:
     """Fetch raw snippets from all five sources.
 
+    Uses the richer collectors (8-angle PubMed search + target context for
+    scientific/translation evidence; AACT direct-competitor analysis +
+    verified epidemiology/pricing for the competitive/commercial picture)
+    instead of one single-query fetch per source — this is what actually
+    produces the depth of evidence the task brief's Required Output asks for
+    (contradictory evidence, human vs animal findings, same-mechanism
+    competitors, verified vs unverified market data).
+
     Any source that fails (or returns None) becomes an empty list here — the
     pipeline keeps going with whatever evidence is actually available.
     """
+    sci_bundle = collect_scientific_sources(indication, mechanism) or {}
+    comm_bundle = collect_commercial_sources(indication, mechanism) or {}
+
+    # sci_bundle's two lists overlap by design (the "clinical"/"opentargets"
+    # query groups feed both scientific_thesis and human_translation) — dedupe
+    # by source once here, split by the "group" tag into pubmed/opentargets
+    # buckets. scientific_agent() re-splits this same merged, tagged list back
+    # into its two groups by filtering on "group" membership, which correctly
+    # reproduces the overlap — a record tagged "clinical" is simply matched by
+    # both filters again, exactly as if the two original lists were kept separate.
+    # Dedupe key is (source, raw_snippet), not source alone: fetch_opentargets()
+    # deliberately reuses the same "source" label (e.g. "Open Targets
+    # {targetId}-{diseaseId}") for several distinct records about the same
+    # target/disease pair (association score, known-drugs compatibility
+    # record, etc.) — deduping on source alone would drop all but the first
+    # of those, including the one record that carries "known_drugs" (which
+    # raw_data.extract_analogs() needs for the Analogs/competitors display).
+    seen_records: set = set()
+    pubmed_records: list[dict] = []
+    opentargets_records: list[dict] = []
+    for r in sci_bundle.get("scientific_thesis", []) + sci_bundle.get("human_translation", []):
+        key = (r.get("source"), r.get("raw_snippet"))
+        if not key[0] or key in seen_records:
+            continue
+        seen_records.add(key)
+        (opentargets_records if r.get("group") == "opentargets" else pubmed_records).append(r)
+
+    # comm_bundle["competitive"] mixes AACT records with Open Targets records
+    # (both of which collect_scientific_sources() may have already fetched and
+    # cached) — route by source prefix and dedupe against what's already collected.
+    aact_records: list[dict] = []
+    for r in comm_bundle.get("competitive", []):
+        key = (r.get("source") or "", r.get("raw_snippet"))
+        if key in seen_records:
+            continue
+        seen_records.add(key)
+        (opentargets_records if key[0].startswith("Open Targets") else aact_records).append(r)
+
     return {
-        "pubmed": fetch_pubmed(f"{mechanism} {indication}") or [],
-        "opentargets": fetch_opentargets(mechanism, indication) or [],
+        "pubmed": pubmed_records,
+        "opentargets": opentargets_records,
         "clinicaltrials": fetch_clinicaltrials(indication, mechanism) or [],
-        "aact": fetch_aact(indication, mechanism) or [],
-        "commercial": fetch_commercial(indication) or [],
+        "aact": aact_records,
+        "commercial": comm_bundle.get("commercial", []),
     }
 
 
