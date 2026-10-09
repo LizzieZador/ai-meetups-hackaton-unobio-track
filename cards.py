@@ -19,6 +19,7 @@ nothing.
 they are the committee's verdict layer, rendered above the grid by the front-end,
 not one of the twelve topics.
 """
+from card_tables import VIEW_BUILDERS
 from schema import Claim
 
 CARDS: list[dict] = [
@@ -31,8 +32,8 @@ CARDS: list[dict] = [
     },
     {
         "id": "market_sentiment",
-        "title": "Company disclosures (SEC EDGAR)",
-        "subtitle": "8-K filing metadata and exhibits; not earnings-call transcripts or sentiment analysis",
+        "title": "Market sentiment & expert intelligence",
+        "subtitle": "Earnings calls, press releases, KOL and analyst transcripts",
         "claim_sections": [],
         "raw_sources": ["market_news"],
     },
@@ -49,13 +50,14 @@ CARDS: list[dict] = [
         "subtitle": "Epidemiology, claims and EMR, treatment patterns, market research",
         "claim_sections": ["commercial_opportunity"],
         "raw_sources": ["commercial"],
+        "data_gap_note": "Not available — underlying epidemiology data (market_data.csv) has not yet been verified by the team.",
     },
     {
         "id": "competitive_landscape",
         "title": "Existing competitive landscape",
         "subtitle": "Approved products and late-stage pipeline",
         "claim_sections": ["competitive_landscape"],
-        "raw_sources": ["opentargets", "aact"],
+        "raw_sources": ["opentargets", "aact", "regulatory"],
         "include_analogs": True,
     },
     {
@@ -68,16 +70,16 @@ CARDS: list[dict] = [
     {
         "id": "patent_ip",
         "title": "Patent & IP review",
-        "subtitle": "Not connected yet: needs searchable patent records and claim-level review",
+        "subtitle": "Lens.org patent records; litigation and freedom-to-operate analysis not covered",
         "claim_sections": [],
-        "raw_sources": [],
+        "raw_sources": ["patents"],
     },
     {
         "id": "trial_design",
         "title": "Clinical trial design intelligence",
         "subtitle": "Protocols, clinicaltrials.gov, publications",
         "claim_sections": ["clinical_development_plan"],
-        "raw_sources": [],
+        "raw_sources": ["clinicaltrials"],
     },
     {
         "id": "manufacturing",
@@ -85,13 +87,14 @@ CARDS: list[dict] = [
         "subtitle": "",
         "claim_sections": ["capital_required"],
         "raw_sources": [],
+        "data_gap_note": "Not available — no connected source for manufacturing, supply chain or cost-of-goods data.",
     },
     {
         "id": "red_flags",
         "title": "Red flag monitor",
         "subtitle": "Safety reports, regulatory actions, litigation, data-room review",
         "claim_sections": ["key_risks", "critical_unknowns"],
-        "raw_sources": [],
+        "raw_sources": ["clinicaltrials"],
     },
     {
         "id": "green_flags",
@@ -105,7 +108,7 @@ CARDS: list[dict] = [
         "title": "Regulatory timeline",
         "subtitle": "Trial registries, FDA approval records",
         "claim_sections": [],
-        "raw_sources": ["aact"],
+        "raw_sources": ["aact", "regulatory"],
     },
 ]
 
@@ -133,7 +136,12 @@ def build_cards(claims: list[Claim], sources: dict, analogs: list[dict]) -> list
         ]
         if spec.get("include_analogs"):
             items += [
-                {"kind": "analog", "name": d.get("name"), "stage": d.get("stage") or "stage unknown"}
+                {
+                    "kind": "analog",
+                    "name": d.get("name"),
+                    "stage": d.get("stage") or "stage unknown",
+                    "mechanism": d.get("mechanism"),
+                }
                 for d in analogs
             ]
         if spec["id"] == "regulatory_timeline" and not items:
@@ -144,6 +152,10 @@ def build_cards(claims: list[Claim], sources: dict, analogs: list[dict]) -> list
                 "date_accessed": "",
                 "raw_snippet": "AACT unavailable / 0 trials",
             })
+
+        view_builder = VIEW_BUILDERS.get(spec["id"])
+        view = view_builder(by_section, sources, analogs) if view_builder else {"view": "list"}
+
         cards.append({
             "id": spec["id"],
             "number": number,
@@ -152,6 +164,8 @@ def build_cards(claims: list[Claim], sources: dict, analogs: list[dict]) -> list
             "wired": bool(spec["claim_sections"] or spec["raw_sources"]),
             "items": items,
             "sources": _card_sources(items),
+            "data_gap_note": spec.get("data_gap_note"),
+            **view,
         })
     return cards
 

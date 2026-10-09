@@ -11,6 +11,7 @@ Deliverable: architecture, source attribution, model/API usage, cost, logs/trace
 import datetime
 import json
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -28,6 +29,7 @@ from report import render_report
 from schema import Claim, get_dropped_claims_log, reset_dropped_claims_log, log_dropped_claim
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
+from sources.fetch_lens import fetch_patent_signals
 from sources.fetch_regulatory import fetch_regulatory_signals
 from sources.fetch_secedgar import fetch_press_releases
 
@@ -86,12 +88,19 @@ def collect_sources(indication: str, mechanism: str) -> dict:
         seen_records.add(key)
         (opentargets_records if key[0].startswith("Open Targets") else aact_records).append(r)
 
-    # Regulatory precedent (openFDA) and company disclosures (SEC EDGAR) are
-    # keyed by drug name, not target/indication — they ride on the same
-    # analog drug list Open Targets already gave us (extract_analogs() reads
-    # the "known_drugs" field attached to opentargets_records above). No
-    # analogs found means nothing to query yet, not a fetch failure.
+    # Regulatory precedent (openFDA), company disclosures (SEC EDGAR) and
+    # patents (Lens.org) are keyed by drug name, not target/indication — they
+    # mainly ride on the analog drug list Open Targets already gave us
+    # (extract_analogs() reads the "known_drugs" field attached to
+    # opentargets_records above). That list is empty whenever Open Targets
+    # can't resolve the mechanism to a specific gene/target with recorded
+    # drugs (e.g. a broad single-word query like "cancer" typed without the
+    # "mechanism | indication" search syntax) — in that case the raw
+    # mechanism string is tried directly too, since it's sometimes itself a
+    # drug/gene name these APIs can match even without an Open Targets
+    # analog (e.g. a user searching "sotorasib" alone).
     analog_names = [d["name"] for d in extract_analogs({"opentargets": opentargets_records}) if d.get("name")]
+    query_terms = analog_names or ([mechanism] if mechanism else [])
 
     return {
         "pubmed": pubmed_records,
@@ -99,8 +108,9 @@ def collect_sources(indication: str, mechanism: str) -> dict:
         "clinicaltrials": fetch_clinicaltrials(indication, mechanism) or [],
         "aact": aact_records,
         "commercial": comm_bundle.get("commercial", []),
-        "regulatory": fetch_regulatory_signals(analog_names[:5]) if analog_names else [],
-        "market_news": fetch_press_releases(analog_names[:3], max_per_term=4) if analog_names else [],
+        "regulatory": fetch_regulatory_signals(query_terms[:5]) if query_terms else [],
+        "market_news": fetch_press_releases(query_terms[:3], max_per_term=4) if query_terms else [],
+        "patents": fetch_patent_signals(query_terms[:3], max_per_term=5) if query_terms else [],
     }
 
 

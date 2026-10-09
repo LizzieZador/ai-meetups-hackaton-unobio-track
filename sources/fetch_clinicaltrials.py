@@ -109,6 +109,11 @@ def _fetch(params: dict) -> Optional[list[dict]]:
                 "enrollmentCount": enrollment_count,
                 "leadSponsor": lead_sponsor_name,
                 "startDate": start_date,
+                # The query's own condition string, verbatim — not a per-trial
+                # field from the API, but a 100% accurate one since it's the
+                # exact value this search was run for (needed by the Pipeline
+                # card's "Indication" column, which has no API field of its own).
+                "indication": params["query.cond"],
                 # Fields used across the underwriting pipeline for provenance:
                 "source": f"ClinicalTrials.gov {nct_id}" if nct_id else "ClinicalTrials.gov",
                 "url": f"https://clinicaltrials.gov/study/{nct_id}" if nct_id else API_URL,

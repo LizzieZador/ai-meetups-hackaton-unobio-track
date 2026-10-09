@@ -16,9 +16,10 @@ SOURCE_TITLES = {
     "commercial": "Epidemiology / Market Data",
     "regulatory": "openFDA Drugs@FDA (approval records and recorded designations)",
     "market_news": "SEC EDGAR (company filing metadata and exhibits)",
+    "patents": "Lens.org (patent records)",
 }
 SOURCE_ORDER = [
-    "pubmed", "opentargets", "clinicaltrials", "aact", "commercial", "regulatory", "market_news",
+    "pubmed", "opentargets", "clinicaltrials", "aact", "commercial", "regulatory", "market_news", "patents",
 ]
 
 
