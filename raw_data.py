@@ -14,8 +14,12 @@ SOURCE_TITLES = {
     "clinicaltrials": "ClinicalTrials.gov",
     "aact": "AACT (Aggregate Analysis of ClinicalTrials.gov)",
     "commercial": "Epidemiology / Market Data",
+    "regulatory": "openFDA Drugs@FDA (regulatory designations)",
+    "market_news": "SEC EDGAR (company disclosures & press releases)",
 }
-SOURCE_ORDER = ["pubmed", "opentargets", "clinicaltrials", "aact", "commercial"]
+SOURCE_ORDER = [
+    "pubmed", "opentargets", "clinicaltrials", "aact", "commercial", "regulatory", "market_news",
+]
 
 
 def collect_valid_sources(sources: dict) -> set:

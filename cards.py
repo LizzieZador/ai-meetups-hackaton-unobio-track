@@ -34,7 +34,7 @@ CARDS: list[dict] = [
         "title": "Market sentiment & expert intelligence",
         "subtitle": "Earnings calls, press releases, KOL and analyst transcripts",
         "claim_sections": [],
-        "raw_sources": [],
+        "raw_sources": ["market_news"],
     },
     {
         "id": "scientific_evidence",
@@ -98,7 +98,7 @@ CARDS: list[dict] = [
         "title": "Green flag & regulatory advantage monitor",
         "subtitle": "Regulatory databases, company disclosures, academic literature",
         "claim_sections": [],
-        "raw_sources": [],
+        "raw_sources": ["regulatory"],
     },
     {
         "id": "regulatory_timeline",

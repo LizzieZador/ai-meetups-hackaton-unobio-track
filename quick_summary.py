@@ -149,7 +149,7 @@ def _section_row(section: str, section_claims: list[Claim], sources: dict) -> di
 def _sources_row(claims: list[Claim], sources: dict, analogs: list[dict]) -> dict:
     cited = _claim_detail_sources(claims)
     raw_total = sum(len(v) for v in sources.values())
-    text = f"{len(cited)} cited source(s), out of {raw_total} records collected across 5 databases"
+    text = f"{len(cited)} cited source(s), out of {raw_total} records collected across {len(sources)} databases"
 
     detail_parts = []
     if analogs:

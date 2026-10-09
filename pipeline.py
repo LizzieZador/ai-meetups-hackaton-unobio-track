@@ -27,6 +27,8 @@ from report import render_report
 from schema import Claim
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
+from sources.fetch_regulatory import fetch_regulatory_signals
+from sources.fetch_secedgar import fetch_press_releases
 
 REPORTS_DIR = Path(__file__).resolve().parent / "data" / "reports"
 
@@ -83,12 +85,21 @@ def collect_sources(indication: str, mechanism: str) -> dict:
         seen_records.add(key)
         (opentargets_records if key[0].startswith("Open Targets") else aact_records).append(r)
 
+    # Regulatory precedent (openFDA) and company disclosures (SEC EDGAR) are
+    # keyed by drug name, not target/indication — they ride on the same
+    # analog drug list Open Targets already gave us (extract_analogs() reads
+    # the "known_drugs" field attached to opentargets_records above). No
+    # analogs found means nothing to query yet, not a fetch failure.
+    analog_names = [d["name"] for d in extract_analogs({"opentargets": opentargets_records}) if d.get("name")]
+
     return {
         "pubmed": pubmed_records,
         "opentargets": opentargets_records,
         "clinicaltrials": fetch_clinicaltrials(indication, mechanism) or [],
         "aact": aact_records,
         "commercial": comm_bundle.get("commercial", []),
+        "regulatory": fetch_regulatory_signals(analog_names[:5]) if analog_names else [],
+        "market_news": fetch_press_releases(analog_names[:3], max_per_term=4) if analog_names else [],
     }
 
 
