@@ -1,6 +1,6 @@
 """Commercial source — market/epidemiology figures and competitive landscape aggregator.
 
-Owner: Комерційний аналітик.
+Owner: Commercial Analyst.
 Gathers manual epidemiology/pricing datasets (data/market_data.csv, data/pricing_data.csv)
 and integrates AACT competitor landscapes and Open Targets known drugs.
 

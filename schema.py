@@ -56,6 +56,14 @@ class Claim:
     # inference fields — required when type == "inference"
     reasoning: Optional[str] = None
     confidence: Optional[Confidence] = None
+    # optional metadata fields
+    evidence_id: Optional[str] = None
+    based_on: Optional[list[str]] = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.section, str):
+            clean_sec = self.section.strip().lower()
+            self.section = SECTION_ALIASES.get(clean_sec, clean_sec)  # type: ignore[assignment]
 
     def validate(self) -> None:
         if self.section not in SECTION_TITLES:
@@ -69,34 +77,123 @@ class Claim:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
-def parse_claims(raw: list[dict], valid_sources: Optional[set] = None) -> list[Claim]:
+SECTION_ALIASES: dict[str, str] = {
+    # recommendation
+    "verdict": "recommendation",
+    "recommendations": "recommendation",
+    "investment_recommendation": "recommendation",
+    "investment_verdict": "recommendation",
+    # scientific_thesis
+    "scientific": "scientific_thesis",
+    "science": "scientific_thesis",
+    "scientific_validation": "scientific_thesis",
+    "biological_validation": "scientific_thesis",
+    # human_translation_thesis
+    "human_translation": "human_translation_thesis",
+    "translation": "human_translation_thesis",
+    "translation_thesis": "human_translation_thesis",
+    # clinical_development_plan
+    "clinical": "clinical_development_plan",
+    "clinical_development": "clinical_development_plan",
+    "clinical_plan": "clinical_development_plan",
+    "clinical_trials": "clinical_development_plan",
+    # competitive_landscape
+    "competition": "competitive_landscape",
+    "competitors": "competitive_landscape",
+    "competitive": "competitive_landscape",
+    # commercial_opportunity
+    "commercial": "commercial_opportunity",
+    "market": "commercial_opportunity",
+    "market_opportunity": "commercial_opportunity",
+    # capital_required
+    "capital": "capital_required",
+    "capital_requirement": "capital_required",
+    "capital_needed": "capital_required",
+    "capital_requirements": "capital_required",
+    # key_risks
+    "key_risk": "key_risks",
+    "risk": "key_risks",
+    "risks": "key_risks",
+    "failure_modes": "key_risks",
+    "key_risks_and_failure_modes": "key_risks",
+    # critical_unknowns
+    "unknown": "critical_unknowns",
+    "unknowns": "critical_unknowns",
+    "critical_unknown": "critical_unknowns",
+    # diligence_questions
+    "diligence_question": "diligence_questions",
+    "diligence": "diligence_questions",
+    "questions": "diligence_questions",
+    "highest_value_diligence_questions": "diligence_questions",
+}
+
+_dropped_claims_log: list[dict] = []
+
+
+def log_dropped_claim(stage: str, claim_data: object, reason: str) -> None:
+    """Record a dropped or rejected claim with its reason for trace auditing."""
+    if isinstance(claim_data, dict):
+        claim_repr = claim_data
+    elif hasattr(claim_data, "to_dict"):
+        claim_repr = claim_data.to_dict()  # type: ignore[union-attr]
+    elif hasattr(claim_data, "__dict__"):
+        claim_repr = {k: v for k, v in claim_data.__dict__.items() if not k.startswith("_")}
+    else:
+        claim_repr = str(claim_data)
+
+    _dropped_claims_log.append({
+        "stage": stage,
+        "claim": claim_repr,
+        "reason": reason,
+    })
+
+
+def reset_dropped_claims_log() -> None:
+    """Reset the dropped claims log at the start of a pipeline run."""
+    _dropped_claims_log.clear()
+
+
+def get_dropped_claims_log() -> list[dict]:
+    """Retrieve all dropped claims recorded during the current run."""
+    return list(_dropped_claims_log)
+
+
+def parse_claims(
+    raw: list[dict],
+    valid_sources: Optional[set] = None,
+    stage: str = "parse_claims",
+) -> list[Claim]:
     """Parse + validate claim dicts coming back from an LLM call.
 
-    An LLM is never trusted to self-police its own evidence/inference labeling —
-    anything that fails validation (e.g. type=evidence with no source) is dropped
-    here, in code, rather than rendered into the report.
-
-    When `valid_sources` is given (the exact `source` strings of every item we
-    actually fetched this run — see pipeline.collect_valid_sources()), every
-    evidence claim's `source` must match one of them (substring match, since the
-    LLM sometimes echoes a source slightly reformatted). An evidence claim citing
-    a source we never fetched is a hallucinated citation and is dropped — the
-    model is instructed to copy sources verbatim, but that instruction is never
-    trusted on its own.
+    Tolerates extra keys from the LLM or upstream collectors by filtering
+    to Claim dataclass fields. Logs any dropped claims with their reason.
     """
     claims = []
-    for item in raw:
-        try:
-            c = Claim(**item)
-            c.validate()
-        except (TypeError, ValueError):
+    known_fields = set(Claim.__dataclass_fields__.keys())
+
+    for idx, item in enumerate(raw or []):
+        if not isinstance(item, dict):
+            log_dropped_claim(stage, item, f"Claim #{idx + 1}: item is not a dict ({type(item).__name__})")
             continue
+
+        # Filter out extra unexpected keys to tolerate model extensions
+        filtered_item = {k: v for k, v in item.items() if k in known_fields}
+
+        try:
+            c = Claim(**filtered_item)
+            c.validate()
+        except (TypeError, ValueError) as e:
+            log_dropped_claim(stage, item, f"Claim #{idx + 1}: validation failed ({e})")
+            continue
+
         if (
             valid_sources is not None
             and c.type == "evidence"
             and not _source_is_grounded(c.source, valid_sources)
         ):
+            log_dropped_claim(stage, item, f"Claim #{idx + 1}: evidence source '{c.source}' not grounded in valid_sources")
             continue
+
         claims.append(c)
     return claims
 

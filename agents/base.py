@@ -17,7 +17,7 @@ import re
 from typing import Any, Optional
 
 from llm import ask_claude_json
-from schema import Claim, Confidence, Section
+from schema import Claim, Confidence, Section, log_dropped_claim
 
 
 def normalize_text(text: Optional[str]) -> str:
@@ -191,12 +191,16 @@ def validate_and_build_claims(
 
     for idx, item in enumerate(raw_claims, 1):
         if not isinstance(item, dict):
-            rejected.append(f"Claim #{idx}: item is not a dict ({type(item).__name__})")
+            reason = f"item is not a dict ({type(item).__name__})"
+            rejected.append(f"Claim #{idx}: {reason}")
+            log_dropped_claim(agent_name, item, reason)
             continue
 
         claim_text = str(item.get("claim") or "").strip()
         if not claim_text:
-            rejected.append(f"Claim #{idx}: missing or empty 'claim' text")
+            reason = "missing or empty 'claim' text"
+            rejected.append(f"Claim #{idx}: {reason}")
+            log_dropped_claim(agent_name, item, reason)
             continue
 
         raw_type = str(item.get("type") or "").strip().lower()
@@ -206,39 +210,41 @@ def validate_and_build_claims(
         # ---------------------------------------------------------
         if raw_type == "evidence":
             if not has_sources:
-                rejected.append(
-                    f"Claim #{idx} [evidence]: sources list is empty, evidence claims are forbidden"
-                )
+                reason = "sources list is empty, evidence claims are forbidden"
+                rejected.append(f"Claim #{idx} [evidence]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             raw_eid = item.get("evidence_id")
             resolved_eid = resolve_evidence_id(raw_eid, source_map)
             if not resolved_eid:
-                rejected.append(
-                    f"Claim #{idx} [evidence]: evidence_id '{raw_eid}' not found in provided sources"
-                )
+                reason = f"evidence_id '{raw_eid}' not found in provided sources"
+                rejected.append(f"Claim #{idx} [evidence]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             raw_snippet = item.get("exact_snippet") or ""
             clean_snippet = str(raw_snippet).strip(" \t\n\r\"'«»“”")
             if not clean_snippet:
-                rejected.append(f"Claim #{idx} [evidence]: missing or empty 'exact_snippet'")
+                reason = "missing or empty 'exact_snippet'"
+                rejected.append(f"Claim #{idx} [evidence]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             target_source = source_map[resolved_eid]
             if valid_sources is not None and not any(
                 target_source["source"] in v or v in target_source["source"] for v in valid_sources
             ):
-                rejected.append(
-                    f"Claim #{idx} [evidence]: source '{target_source['source']}' is not in valid_sources"
-                )
+                reason = f"source '{target_source['source']}' is not in valid_sources"
+                rejected.append(f"Claim #{idx} [evidence]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             if not verify_exact_snippet(clean_snippet, target_source["raw_snippet"]):
                 snippet_preview = clean_snippet[:50] + "..." if len(clean_snippet) > 50 else clean_snippet
-                rejected.append(
-                    f"Claim #{idx} [evidence]: exact_snippet {snippet_preview!r} not found verbatim in [{resolved_eid}]"
-                )
+                reason = f"exact_snippet {snippet_preview!r} not found verbatim in [{resolved_eid}]"
+                rejected.append(f"Claim #{idx} [evidence]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             try:
@@ -254,7 +260,9 @@ def validate_and_build_claims(
                 )
                 accepted.append(c)
             except Exception as e:
-                rejected.append(f"Claim #{idx} [evidence]: validation error ({e})")
+                reason = f"validation error ({e})"
+                rejected.append(f"Claim #{idx} [evidence]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
         # ---------------------------------------------------------
@@ -263,14 +271,16 @@ def validate_and_build_claims(
         elif raw_type == "inference":
             reasoning = str(item.get("reasoning") or "").strip()
             if not reasoning:
-                rejected.append(f"Claim #{idx} [inference]: missing or empty 'reasoning'")
+                reason = "missing or empty 'reasoning'"
+                rejected.append(f"Claim #{idx} [inference]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             raw_conf = str(item.get("confidence") or "").strip().lower()
             if raw_conf not in ("low", "medium", "high"):
-                rejected.append(
-                    f"Claim #{idx} [inference]: invalid confidence '{raw_conf}' (must be low|medium|high)"
-                )
+                reason = f"invalid confidence '{raw_conf}' (must be low|medium|high)"
+                rejected.append(f"Claim #{idx} [inference]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
             # When no sources were provided, only low-confidence inferences are permitted
@@ -295,9 +305,9 @@ def validate_and_build_claims(
                         invalid_ids.append(str(bid))
 
                 if invalid_ids:
-                    rejected.append(
-                        f"Claim #{idx} [inference]: based_on contains unknown source IDs {invalid_ids}"
-                    )
+                    reason = f"based_on contains unknown source IDs {invalid_ids}"
+                    rejected.append(f"Claim #{idx} [inference]: {reason}")
+                    log_dropped_claim(agent_name, item, reason)
                     continue
 
             try:
@@ -311,13 +321,15 @@ def validate_and_build_claims(
                 )
                 accepted.append(c)
             except Exception as e:
-                rejected.append(f"Claim #{idx} [inference]: validation error ({e})")
+                reason = f"validation error ({e})"
+                rejected.append(f"Claim #{idx} [inference]: {reason}")
+                log_dropped_claim(agent_name, item, reason)
                 continue
 
         else:
-            rejected.append(
-                f"Claim #{idx}: unknown claim type '{raw_type}' (must be 'evidence' or 'inference')"
-            )
+            reason = f"unknown claim type '{raw_type}' (must be 'evidence' or 'inference')"
+            rejected.append(f"Claim #{idx}: {reason}")
+            log_dropped_claim(agent_name, item, reason)
             continue
 
     # ---------------------------------------------------------
@@ -334,6 +346,8 @@ def validate_and_build_claims(
 
     if len(accepted) > max_claims:
         print(f"[{agent_name}] Truncating claims from {len(accepted)} to max_claims={max_claims}")
+        for truncated_claim in accepted[max_claims:]:
+            log_dropped_claim(agent_name, truncated_claim.to_dict(), f"Truncated because claims exceeded max_claims={max_claims}")
         accepted = accepted[:max_claims]
 
     return accepted

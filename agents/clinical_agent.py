@@ -1,6 +1,6 @@
 """Clinical agent — development stage, trial design, regulatory path.
 
-Owner: Клінічний аналітик. Sources: ClinicalTrials.gov, AACT.
+Owner: Clinical Analyst. Sources: ClinicalTrials.gov, AACT.
 Covers Required Output section "clinical_development_plan" (regulatory pathway
 and historical precedent are folded in here).
 Chain: consumes the scientific agent's claims; its output feeds the commercial agent.

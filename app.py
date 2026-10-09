@@ -13,8 +13,8 @@ from schema import SECTION_TITLES
 
 VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
 
-st.set_page_config(page_title="AI-інвесткомітет для біотеху", layout="wide")
-st.title("AI-інвесткомітет для біотеху")
+st.set_page_config(page_title="Biotech Investment Committee AI", layout="wide")
+st.title("Biotech Investment Committee AI")
 st.caption("Disease/Indication + Mechanism/target -> Investment Underwriting Report")
 
 with st.form("intake"):

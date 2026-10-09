@@ -2,39 +2,37 @@ import json
 import sys
 from pathlib import Path
 
-# Дозволяє запускати і як "python agents/test_local_run.py" напряму, і як
-# "python -m agents.test_local_run" з кореня репо.
+# Allows running both directly via "python agents/test_local_run.py" and
+# via "python -m agents.test_local_run" from repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
-# Без цього AACT_DB_* з .env не підвантажуються і get_competitors_from_aact()
-# мовчки падає назад на (відсутні) flat-файли — скрипт "успішно" завершується,
-# але без жодного AACT-claim, що виглядає як неправильно малий результат.
+# Ensure AACT_DB_* from .env are loaded so get_competitors_from_aact()
+# connects to database rather than falling back to flat files.
 load_dotenv()
 
-# Імпортуємо наші два працюючих модулі
+# Import modules
 from sources import run_commercial_analysis
 from sources import get_competitors_from_aact
 
 def generate_commercial_report(indication: str, target: str) -> dict:
-    print(f"=== ЗАПУСК COMMERCIAL AGENT ДЛЯ [{indication} | {target}] ===")
+    print(f"=== RUNNING COMMERCIAL AGENT FOR [{indication} | {target}] ===")
 
-    # 1. Збираємо дані про ринок та епідеміологію
+    # 1. Collect market and epidemiology data
     commercial_base = run_commercial_analysis(indication, target)
 
-    # 2. Збираємо дані про конкурентів з AACT (indication + target/mechanism)
+    # 2. Collect competitor data from AACT (indication + target/mechanism)
     aact_base = get_competitors_from_aact(indication, target)
 
     all_claims = []
 
-    # Об'єднуємо evidence з epidemiology-джерела
+    # Combine evidence from epidemiology source
     if commercial_base and "claims" in commercial_base:
         all_claims.extend(commercial_base["claims"])
 
-    # get_competitors_from_aact() повертає сирий аналіз (count + розподіл за
-    # фазами), а не вже готові claims — перетворюємо його тут в evidence claim
-    # за тією ж схемою, що й решта пайплайна (schema.py: Claim).
+    # get_competitors_from_aact() returns raw analysis (count + phase distribution);
+    # transform into an evidence claim here following schema.py.
     if aact_base:
         all_claims.append({
             "claim": aact_base["raw_snippet"],
@@ -44,18 +42,17 @@ def generate_commercial_report(indication: str, target: str) -> dict:
             "date_accessed": aact_base["date_accessed"],
         })
 
-    # 3. Додаємо інтелектуальний аналіз (inference) на основі РЕАЛЬНОЇ
-    # кількості активних випробувань, а не вигаданого числа.
+    # 3. Add inference based on actual count of active trials.
     if aact_base and aact_base["active_trials_count"] > 0:
         all_claims.append({
             "claim": (
-                f"Високий рівень конкурентного тиску у ніші '{indication}'. "
-                f"{aact_base['active_trials_count']} активних випробувань ускладнюють "
-                f"набір пацієнтів у нові клінічні дослідження."
+                f"High competitive pressure in the '{indication}' indication. "
+                f"{aact_base['active_trials_count']} active trials hinder "
+                f"patient recruitment for new clinical studies."
             ),
             "type": "inference",
             "section": "competitive_landscape",
-            "reasoning": "Оцінено на основі агрегованих даних AACT про кількість активних фаз.",
+            "reasoning": "Estimated based on aggregated AACT data on active trial counts.",
             "confidence": "medium",
         })
 
@@ -72,8 +69,8 @@ def generate_commercial_report(indication: str, target: str) -> dict:
 if __name__ == "__main__":
     report = generate_commercial_report("Non-Small Cell Lung Cancer", "KRAS G12C")
     
-    # Зберігаємо підсумковий результат у файл для Голови Комітету (Chair Agent)
+    # Save summary result to file for Chair Agent
     with open("commercial_agent_output.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
         
-    print("\n Звіт Commercial Agent успішно згенеровано та збережено у 'commercial_agent_output.json'!")
+    print("\n Commercial Agent report successfully generated and saved to 'commercial_agent_output.json'!")

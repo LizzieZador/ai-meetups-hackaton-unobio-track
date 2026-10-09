@@ -1,17 +1,17 @@
-"""Демонстраційний сценарій для хакатону: реакція системи на суперечливі дані.
+"""Demonstration scenario: system response to contradictory data.
 
-Вимога ТЗ ("Moving Beyond the Molecule"):
-«The demo should include at least one example where new or contradictory evidence
-changes the system's conclusion.»
+Specification requirement ("Moving Beyond the Molecule"):
+"The demo should include at least one example where new or contradictory evidence
+changes the system's conclusion."
 
-Цей скрипт запускає інвесткомітет у двох режимах для однієї і тієї ж мішені:
-1. Базовий сценарій (без додаткового контексту) -> Позитивна/помірна оцінка.
-2. Сценарій із суперечливими даними (провал Фази 3, гепатотоксичність, FDA hold) -> Зміна вердикту на Do Not Invest.
+This script runs the investment committee in two modes for the same target:
+1. Baseline scenario (no extra context) -> Positive/conditional evaluation.
+2. Contradictory evidence scenario (Phase 3 failure, hepatotoxicity, FDA hold) -> Verdict flips to Do Not Invest.
 """
 import sys
 from pathlib import Path
 
-# Підключаємо корінь проєкту до sys.path
+# Add project root to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -64,43 +64,43 @@ def extract_summary(claims: list) -> dict:
 
 def main():
     print("=" * 80)
-    print("DEMO: AI-ІНВЕСТКОМІТЕТ — ПЕРЕВІРКА РЕАКЦІЇ НА СУПЕРЕЧЛИВІ ДАНІ (ТЗ ХАКАТОНУ)")
-    print(f"Показання: {INDICATION}")
-    print(f"Мішень/Механізм: {MECHANISM}")
+    print("DEMO: BIOTECH INVESTMENT COMMITTEE — CONTRADICTORY EVIDENCE SENSITIVITY")
+    print(f"Indication: {INDICATION}")
+    print(f"Target/Mechanism: {MECHANISM}")
     print("=" * 80)
 
-    # 1. Базовий запуск
-    print("\n>>> КРОК 1: Запуск базового пайплайну (без додаткового контексту)...")
+    # 1. Baseline run
+    print("\n>>> STEP 1: Running baseline pipeline (without additional context)...")
     base_claims, base_cost, _ = run_pipeline(INDICATION, MECHANISM, extra_context="")
     base_summary = extract_summary(base_claims)
 
-    print(f"   [Базовий вердикт]: {base_summary['verdict']}")
-    print(f"   [rNPV оцінка]: {base_summary['rnpv']}")
-    print(f"   [Головний ризик]: {base_summary['top_risk'][:120]}...")
+    print(f"   [Baseline verdict]: {base_summary['verdict']}")
+    print(f"   [rNPV estimate]: {base_summary['rnpv']}")
+    print(f"   [Top risk]: {base_summary['top_risk'][:120]}...")
 
-    # 2. Запуск із новими суперечливими даними
-    print("\n>>> КРОК 2: Запуск із новими суперечливими даними (FDA Hold + токсичність)...")
-    print(f"   Введений контекст: {CONTRADICTORY_CONTEXT[:100]}...")
+    # 2. Run with contradictory evidence
+    print("\n>>> STEP 2: Running with new contradictory evidence (FDA Hold + toxicity)...")
+    print(f"   Injected context: {CONTRADICTORY_CONTEXT[:100]}...")
     contra_claims, contra_cost, _ = run_pipeline(INDICATION, MECHANISM, extra_context=CONTRADICTORY_CONTEXT)
     contra_summary = extract_summary(contra_claims)
 
-    print(f"   [Оновлений вердикт]: {contra_summary['verdict']}")
-    print(f"   [rNPV оцінка]: {contra_summary['rnpv']}")
-    print(f"   [Головний ризик]: {contra_summary['top_risk'][:120]}...")
+    print(f"   [Updated verdict]: {contra_summary['verdict']}")
+    print(f"   [rNPV estimate]: {contra_summary['rnpv']}")
+    print(f"   [Top risk]: {contra_summary['top_risk'][:120]}...")
 
-    # 3. Підсумкова порівняльна таблиця
+    # 3. Summary comparison table
     print("\n" + "=" * 80)
-    print("ПІДСУМОК ДЕМОНСТРАЦІЇ: ЗМІНА ВИСНОВКУ СИСТЕМИ (BEFORE vs AFTER)")
+    print("DEMO SUMMARY: SYSTEM CONCLUSION UPDATE (BEFORE vs AFTER)")
     print("=" * 80)
-    print(f"{'Параметр':<25} | {'1. Базовий стан':<25} | {'2. Нові суперечливі дані':<25}")
+    print(f"{'Parameter':<25} | {'1. Baseline State':<25} | {'2. Contradictory Data':<25}")
     print("-" * 80)
-    print(f"{'Фінальний вердикт':<25} | {base_summary['verdict']:<25} | {contra_summary['verdict']:<25}")
-    print(f"{'Топ-ризик':<25} | {base_summary['top_risk'][:25]:<25} | {contra_summary['top_risk'][:25]:<25}")
+    print(f"{'Final Verdict':<25} | {base_summary['verdict']:<25} | {contra_summary['verdict']:<25}")
+    print(f"{'Top Risk':<25} | {base_summary['top_risk'][:25]:<25} | {contra_summary['top_risk'][:25]:<25}")
     print("-" * 80)
-    print(f"Обґрунтування вердикту (До):   {base_summary['reasoning'][:120]}...")
-    print(f"Обґрунтування вердикту (Після): {contra_summary['reasoning'][:120]}...")
+    print(f"Verdict Rationale (Before): {base_summary['reasoning'][:120]}...")
+    print(f"Verdict Rationale (After):  {contra_summary['reasoning'][:120]}...")
     print("=" * 80)
-    print("Вимогу ТЗ успішно підтверджено: нові дані динамічно змінюють вердикт комітету!")
+    print("Requirement verified: new evidence dynamically updates the committee verdict!")
 
 
 if __name__ == "__main__":

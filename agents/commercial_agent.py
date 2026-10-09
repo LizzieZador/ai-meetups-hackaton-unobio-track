@@ -1,6 +1,6 @@
 """Commercial agent — competitive landscape & commercial opportunity.
 
-Owner: Комерційний аналітик.
+Owner: Commercial Analyst.
 Sources: AACT (competitors, stop_categories), Open Targets, manual epidemiology & pricing datasets.
 Covers Required Output sections: "competitive_landscape" and "commercial_opportunity".
 

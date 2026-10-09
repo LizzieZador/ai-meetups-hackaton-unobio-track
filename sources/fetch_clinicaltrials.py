@@ -1,6 +1,6 @@
 """ClinicalTrials.gov API v2 — details of individual trials.
 
-Owner: Клінічний аналітик.
+Owner: Clinical Analyst.
 """
 import datetime
 import hashlib

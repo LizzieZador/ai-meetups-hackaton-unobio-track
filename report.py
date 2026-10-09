@@ -67,11 +67,11 @@ def _filter_summary_claims(claims: list[Claim], section: str, limit: int = 2) ->
 def render_report(
     indication: str, mechanism: str, claims: list[Claim], cost_summary: Optional[str] = None
 ) -> str:
-    """Генерація єдиного фінального Investment Underwriting Report.
+    """Generates the unified final Investment Underwriting Report.
 
-    Структура:
-    - Загальна відфільтрована інформація (Recommendation + 8 тез)
-    - Детальна інформація (5-10 Diligence Questions + Повна деталізація Claims + Sources)
+    Structure:
+    - Executive synthesis (Recommendation + core theses)
+    - Detailed diligence (5-10 Diligence Questions + detailed Claims & Traceability + Sources)
     """
     by_section: dict[str, list[Claim]] = defaultdict(list)
     for c in claims:
@@ -103,7 +103,7 @@ def render_report(
 
     lines.append("")
 
-    # 2. Відфільтровані загальні тези (Core Theses)
+    # 2. Filtered summary theses (Core Theses)
     core_sections = [
         ("scientific_thesis", "Scientific thesis"),
         ("human_translation_thesis", "Human translation thesis"),
@@ -119,7 +119,7 @@ def render_report(
         lines.extend(bullets)
         lines.append("")
 
-    # 3. Key risks and failure modes (Топ 2-3 ризики з імовірністю та впливом)
+    # 3. Key risks and failure modes (Top 2-3 risks with probability and impact)
     lines.append("## Key risks and failure modes")
     risks = by_section.get("key_risks", [])
     if risks:
@@ -130,7 +130,7 @@ def render_report(
         lines.append("_No critical failure modes reported._")
     lines.append("")
 
-    # 4. Critical unknowns (2-3 найважливіші невідомі)
+    # 4. Critical unknowns (Top 2-3 critical unknowns)
     lines.append("## Critical unknowns")
     unknowns = by_section.get("critical_unknowns", [])
     if unknowns:
@@ -140,7 +140,7 @@ def render_report(
         lines.append("_No critical unknowns identified._")
     lines.append("")
 
-    # 5. Детальна інформація: 5–10 highest-value diligence questions
+    # 5. Detailed diligence: 5–10 highest-value diligence questions
     lines.append("---")
     lines.append("## 5–10 highest-value diligence questions")
     lines.append("_Key non-public items required to validate the thesis before capital deployment (min 5, max 10):_")
@@ -162,7 +162,7 @@ def render_report(
         lines.append("_No diligence questions submitted by the committee._")
     lines.append("")
 
-    # 6. Повна деталізація тверджень (Detailed Claims Traceability)
+    # 6. Detailed Claims Traceability by Section
     lines.append("---")
     lines.append("## Detailed Claims & Traceability by Section")
     for sec_key, sec_title in SECTION_TITLES.items():

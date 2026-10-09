@@ -24,7 +24,7 @@ from llm import get_usage_summary, reset_usage_log
 from quick_summary import build_quick_summary, render_quick_summary_markdown
 from raw_data import collect_valid_sources, extract_analogs, render_raw_data_markdown
 from report import render_report
-from schema import Claim
+from schema import Claim, get_dropped_claims_log, reset_dropped_claims_log, log_dropped_claim
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
 from sources.fetch_regulatory import fetch_regulatory_signals
@@ -134,6 +134,7 @@ def run_pipeline(
     mechanism = mechanism.strip().lower()
 
     reset_usage_log()
+    reset_dropped_claims_log()
     sources = collect_sources(indication, mechanism)
     valid_sources = collect_valid_sources(sources)
 
@@ -163,6 +164,7 @@ def run_pipeline(
         )
     except Exception as e:
         print(f"[Pipeline Warning] chair_agent failed: {e}")
+        log_dropped_claim("chair_agent", None, f"chair_agent failed with exception: {e}")
         final_claims = scientific_claims + clinical_claims + commercial_claims
 
     cost_summary = get_usage_summary()
@@ -177,6 +179,7 @@ def _safe_agent_call(name: str, fn, *args, **kwargs) -> list[Claim]:
         return fn(*args, **kwargs)
     except Exception as e:
         print(f"[Pipeline Warning] {name} failed: {e}")
+        log_dropped_claim(name, None, f"Agent call failed with exception: {e}")
         return []
 
 
@@ -211,6 +214,7 @@ def _write_trace(
         "timestamp": timestamp,
         "sources": sources,
         "claims": [c.to_dict() for c in claims],
+        "dropped_claims": get_dropped_claims_log(),
         "cost_summary": cost_summary,
     }
     path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")

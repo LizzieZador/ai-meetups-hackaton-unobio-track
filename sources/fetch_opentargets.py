@@ -3,7 +3,7 @@
 Fetches target-disease association scores, genetic/somatic evidence scores,
 known drug candidates, target safety liabilities, and target synonyms.
 
-Owner: Науковий аналітик (+ Комерційний аналітик — known drugs = competitors).
+Owner: Scientific Analyst (+ Commercial Analyst — known drugs = competitors).
 """
 import datetime
 import json

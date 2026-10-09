@@ -3,7 +3,7 @@
 Fetches biomedical literature abstracts with strict date filtering,
 rate limiting, retry logic, and deduplication.
 
-Owner: Науковий аналітик.
+Owner: Scientific Analyst.
 """
 import datetime
 import hashlib

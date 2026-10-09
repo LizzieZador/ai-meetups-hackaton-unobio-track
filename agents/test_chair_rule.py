@@ -4,7 +4,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-# Додаємо кореневу папку проєкту до sys.path
+# Add project root folder to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -17,7 +17,7 @@ except ImportError:
 
 from schema import Claim
 from agents.chair_agent import chair_agent
-# 1. Створюємо вхідні claims, де змодельовано високий ризик
+# 1. Create input claims modeling high risk
 test_scientific = [
     Claim(
         claim="Target EGFR T790M is strongly implicated in resistance.",
@@ -54,7 +54,7 @@ test_commercial = [
         confidence="medium",
     )
 ]
-print("=== ЗАПУСК ТЕСТУВАННЯ CHAIR AGENT НА КРИТИЧНИЙ РИЗИК ===")
+print("=== RUNNING CHAIR AGENT CRITICAL RISK TEST ===")
 result_claims = chair_agent(
     indication="Non-Small Cell Lung Cancer",
     mechanism="EGFR mutant inhibitor",
@@ -63,13 +63,13 @@ result_claims = chair_agent(
     commercial_claims=test_commercial,
     extra_context="URGENT UPDATE: FDA issued a clinical hold due to patient deaths.",
 )
-# Перевіряємо вердикт
+# Verify recommendation/verdict
 recommendations = [c for c in result_claims if c.section == "recommendation"]
 key_risks = [c for c in result_claims if c.section == "key_risks"]
-print("\n--- ТОП-РИЗИКИ ---")
+print("\n--- TOP RISKS ---")
 for r in key_risks:
     print(f"[{r.confidence.upper()}] {r.claim} -> {r.reasoning}")
-print("\n--- РЕКОМЕНДАЦІЯ ТА ВЕРДИКТ ---")
+print("\n--- RECOMMENDATION & VERDICT ---")
 for rec in recommendations:
     print(f"VERDICT CLAIM: {rec.claim}")
     print(f"REASONING: {rec.reasoning}\n")

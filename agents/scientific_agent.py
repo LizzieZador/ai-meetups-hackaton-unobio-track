@@ -1,6 +1,6 @@
 """Scientific agent — biological rationale + human translation thesis.
 
-Owner: Науковий аналітик. Sources: PubMed (via NCBI E-utilities), Open Targets.
+Owner: Scientific Analyst. Sources: PubMed (via NCBI E-utilities), Open Targets.
 Covers Required Output sections: "scientific_thesis" and "human_translation_thesis".
 
 Executes two focused agent runs via agents/base.py:

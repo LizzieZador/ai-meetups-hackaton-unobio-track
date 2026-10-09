@@ -27,7 +27,7 @@ if that is not set or fails, falls back to flat files in data/aact/
 The flat-file path has no design-group data, so partner/comparator split there is
 heuristic (study title). Results are cached in cache/ (None is never cached).
 
-Owner: Клінічний аналітик (trial design) + Комерційний аналітик (competitors via sponsors).
+Owner: Clinical Analyst (trial design) + Commercial Analyst (competitors via sponsors).
 """
 import ast
 import csv
