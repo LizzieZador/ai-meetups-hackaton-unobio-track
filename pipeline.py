@@ -20,6 +20,7 @@ from agents.chair_agent import chair_agent
 from agents.clinical_agent import clinical_agent
 from agents.commercial_agent import commercial_agent
 from agents.scientific_agent import collect_scientific_sources, scientific_agent
+from financials import FinancialResult, run_deterministic_financials
 from llm import get_usage_summary, reset_usage_log
 from quick_summary import build_quick_summary, render_quick_summary_markdown
 from raw_data import collect_valid_sources, extract_analogs, render_raw_data_markdown
@@ -157,10 +158,25 @@ def run_pipeline(
         indication, mechanism, sources["aact"] + sources["opentargets"] + sources["commercial"],
         clinical_claims, extra_context, valid_sources,
     )
+
+    financial_result: Optional[FinancialResult] = None
+    try:
+        financial_result = run_deterministic_financials(
+            commercial_claims=commercial_claims,
+            clinical_claims=clinical_claims,
+            sources=sources,
+            indication=indication,
+            mechanism=mechanism,
+        )
+    except Exception as e:
+        print(f"[Pipeline Warning] Deterministic financials calculation failed: {e}")
+
     try:
         final_claims = chair_agent(
             indication, mechanism, scientific_claims, clinical_claims, commercial_claims,
             extra_context=extra_context,
+            financial_result=financial_result,
+            sources=sources,
         )
     except Exception as e:
         print(f"[Pipeline Warning] chair_agent failed: {e}")
@@ -168,7 +184,7 @@ def run_pipeline(
         final_claims = scientific_claims + clinical_claims + commercial_claims
 
     cost_summary = get_usage_summary()
-    _write_trace(indication, mechanism, extra_context, sources, final_claims, cost_summary)
+    _write_trace(indication, mechanism, extra_context, sources, final_claims, cost_summary, financial_result)
     return final_claims, cost_summary, sources
 
 
@@ -202,6 +218,7 @@ def _write_trace(
     sources: dict,
     claims: list[Claim],
     cost_summary: dict,
+    financial_result: Optional[FinancialResult] = None,
 ) -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -214,6 +231,7 @@ def _write_trace(
         "timestamp": timestamp,
         "sources": sources,
         "claims": [c.to_dict() for c in claims],
+        "financial_model": financial_result.to_dict() if financial_result else None,
         "dropped_claims": get_dropped_claims_log(),
         "cost_summary": cost_summary,
     }

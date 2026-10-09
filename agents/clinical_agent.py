@@ -32,7 +32,10 @@ COVER AT MINIMUM:
 3. Historical successes and failures (type "evidence" if citing a specific trial, otherwise "inference"): similar programs in this mechanism class that succeeded or failed (e.g. terminated for futility or safety), and direct implications for the proposed program.
 4. Biomarker multiplier & patient selection (type "inference"): explicit companion diagnostic or biomarker enrichment strategy (e.g. specific mutation, expression threshold, ctDNA) and how biomarker-guided patient selection acts as a success multiplier (historically ~2x higher PTRS vs unselected populations).
 5. Trial economics & development timeline (type "inference"): estimated timeline to primary readout (months for enrollment + follow-up) and approximate capital required for the next clinical phase based on sample size and therapeutic area benchmark costs ($50k-$150k/patient).
-6. PTRS (probability of technical & regulatory success) per phase (type "inference"): benchmark ranges for this therapeutic area, adjusted up or down with explicit target-specific rationale and biomarker multiplier.
+6. PTRS (probability of technical & regulatory success) per phase (type "inference"):
+   You MUST include an inference claim providing explicit PTRS percentages per phase formatted as:
+   "PTRS Benchmarks: Phase 1 = [X]%, Phase 2 = [Y]%, Phase 3 = [Z]%, Cumulative PTRS = [W]%".
+   Detail target-specific rationale, historical failure precedent, and biomarker multiplier adjustments in reasoning.
 7. Regulatory pathway (type "inference"): expedited designations (Breakthrough, Fast Track), accelerated approval vs standard approval endpoints.
 8. Clinical & Safety Diligence Gaps (CRITICAL, type "inference"):
    Produce at least 1-2 inference claims explicitly identifying high-stakes clinical unknowns that cannot be determined from public registries (e.g. unredacted patient-level adverse event narratives, dose-limiting toxicity kinetics, investigator brochure safety data, protocol amendments) and specifying what proprietary clinical data or regulatory audits are required.

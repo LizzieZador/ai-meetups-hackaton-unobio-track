@@ -7,7 +7,21 @@ new claims. Covers Required Output sections "recommendation", "capital_required"
 import datetime
 import json
 import re
+import sys
 from collections import defaultdict
+from pathlib import Path
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from financials import (
+    FinancialResult,
+    build_deterministic_financial_claims,
+    format_financial_brief_for_chair,
+    run_deterministic_financials,
+)
 from llm import ask_claude_json
 from schema import Claim, parse_claims, SECTION_TITLES, SECTION_ALIASES, log_dropped_claim
 CHAIR_SECTIONS = {
@@ -30,7 +44,7 @@ VALID_VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
 
 SECTION_PROMPT_RULES = {
     "key_risks": '- "key_risks": Top 3-5 risks ranked by (probability x impact on rNPV). Reasoning MUST state explicit estimated probability (%) and impact on rNPV.',
-    "capital_required": '- "capital_required": Capital required to reach the next major milestone, time to that milestone, future financing needs, and exit/licensing outcomes (use transparent ranges, e.g. $15M-$25M, 18-24 months).',
+    "capital_required": '- "capital_required": Explain capital required to reach the next major milestone and total capital to commercial launch, citing the exact deterministic numbers provided in the financial model brief (Low/Base/High, timeline in months/years). Detail value inflection points (Phase 2 PoC) and out-licensing/M&A deal benchmarks.',
     "critical_unknowns": '- "critical_unknowns": Top 2-4 critical unanswerable unknowns or missing links that cannot be resolved from public data alone (e.g. human tissue target engagement, long-term toxicity kinetics, companion biomarker validation). Reasoning must explain why public data cannot answer it and what proprietary experiments or audits would resolve it.',
     "diligence_questions": """- "diligence_questions": YOU MUST PRODUCE BETWEEN 5 AND 10 INDIVIDUAL, DISTINCT CLAIM OBJECTS (min 5, max 10).
       Each question MUST be its OWN SEPARATE claim object in the JSON array. NEVER combine multiple questions into one claim or into a numbered list inside reasoning!
@@ -47,9 +61,9 @@ SECTION_PROMPT_RULES = {
          "reasoning": "<Holistic synthesis of why the committee reached this decision>"
          "confidence": "high"|"medium"|"low"
       2) Structured rNPV valuation claim:
-         "claim": MUST follow this EXACT template: "rNPV Scenarios: Low = $[X]M, Base = $[Y]M, High = $[Z]M"
-         "reasoning": MUST explicitly calculate all 3 scenarios: "Low: ([PTRS_Low]% x $[PeakSales_Low]M) - $[Cap_High]M = $[X]M | Base: ([PTRS_Base]% x $[PeakSales_Base]M) - $[Cap_Base]M = $[Y]M | High: ([PTRS_High]% x $[PeakSales_High]M) - $[Cap_Low]M = $[Z]M."
-         "confidence": "medium"
+         "claim": MUST cite the exact calculated values provided in the financial model brief: "rNPV Scenarios: Low = $[Low]M, Base = $[Base]M, High = $[High]M"
+         "reasoning": Explain the economic sensitivity, timeline discounting (WACC), commercial net margin (75%), and clinical PTRS assumptions behind these deterministic figures.
+         "confidence": "high"
       3) Exactly one final verdict claim:
          "claim": MUST BE EXACTLY ONE WORD: "Invest", "Conditional", or "Do Not Invest".
          "reasoning": "<Definitive verdict rationale citing unmet need and top risks>".
@@ -58,14 +72,14 @@ SECTION_PROMPT_RULES = {
 
 SYSTEM_PROMPT = """You are the chair of a biotech investment committee, synthesizing
 claims from three analysts (scientific, clinical, commercial) into a final verdict.
-You will be given all of their claims and optional additional context.
+You will be given all of their claims, optional additional context, and a DETERMINISTIC FINANCIAL MODEL calculated in code.
 Produce a JSON array of NEW claim objects only (do not repeat input claims).
 
 CRITICAL RULES:
 1. Every new claim MUST have "type": "inference" (these are committee judgments).
 2. "section" MUST be one of exactly these five values:
    - "key_risks": Top 3-5 risks ranked by (probability x impact on rNPV). Reasoning MUST state explicit estimated probability (%) and impact on rNPV.
-   - "capital_required": Capital required to reach the next major milestone, time to that milestone, future financing needs, and exit/licensing outcomes (use transparent ranges, e.g. $15M-$25M, 18-24 months).
+   - "capital_required": Detail capital required to reach the next major milestone and commercial launch, citing the exact deterministic numbers from the financial model brief (Low/Base/High, timeline). Detail value inflection points (Phase 2 PoC) and licensing/M&A exit terms.
    - "critical_unknowns": Top 2-4 critical unanswerable unknowns or missing links that cannot be resolved from public data alone (e.g. human tissue target engagement, long-term toxicity kinetics, companion biomarker validation). Reasoning must explain why public data cannot answer it and what proprietary experiments or audits would resolve it.
    - "diligence_questions": YOU MUST PRODUCE BETWEEN 5 AND 10 INDIVIDUAL, DISTINCT CLAIM OBJECTS (min 5, max 10).
      Each question MUST be its OWN SEPARATE claim object in the JSON array. NEVER combine multiple questions into one claim or into a numbered list inside reasoning!
@@ -86,9 +100,9 @@ CRITICAL RULES:
         "reasoning": "<Holistic synthesis of why the committee reached this decision based on cross-discipline evidence>"
         "confidence": "high"|"medium"|"low"
      2) Structured rNPV valuation claim:
-        "claim": MUST follow this EXACT template: "rNPV Scenarios: Low = $[X]M, Base = $[Y]M, High = $[Z]M"
-        "reasoning": MUST explicitly calculate all 3 scenarios: "Low: ([PTRS_Low]% x $[PeakSales_Low]M) - $[Cap_High]M = $[X]M | Base: ([PTRS_Base]% x $[PeakSales_Base]M) - $[Cap_Base]M = $[Y]M | High: ([PTRS_High]% x $[PeakSales_High]M) - $[Cap_Low]M = $[Z]M. (PTRS extracted from Clinical Analyst, Peak Sales extracted from Commercial Analyst)".
-        "confidence": "medium"
+        "claim": MUST cite the exact calculated values provided in the financial model brief: "rNPV Scenarios: Low = $[Low]M, Base = $[Base]M, High = $[High]M"
+        "reasoning": Explain the economic drivers, sensitivity, commercial net margin (75%), and clinical PTRS assumptions behind these deterministic figures.
+        "confidence": "high"
      3) Exactly one final verdict claim:
         "claim": MUST BE EXACTLY ONE WORD: "Invest", "Conditional", or "Do Not Invest".
         "reasoning": "<Definitive verdict rationale citing whether the mechanism solves an important unmet need and addressing top risks>".
@@ -151,6 +165,8 @@ def chair_agent(
     clinical_claims: list[Claim],
     commercial_claims: list[Claim],
     extra_context: str = "",
+    financial_result: Optional[FinancialResult] = None,
+    sources: Optional[dict] = None,
 ) -> list[Claim]:
     all_claims = scientific_claims + clinical_claims + commercial_claims
     structured_input = {
@@ -158,12 +174,28 @@ def chair_agent(
         "clinical_and_trials": [c.to_dict() for c in clinical_claims],
         "commercial_and_market": [c.to_dict() for c in commercial_claims],
     }
+
+    if financial_result is None:
+        try:
+            financial_result = run_deterministic_financials(
+                commercial_claims=commercial_claims,
+                clinical_claims=clinical_claims,
+                sources=sources,
+                indication=indication,
+                mechanism=mechanism,
+            )
+        except Exception as e:
+            print(f"[Chair Agent Warning] Failed to compute deterministic financials: {e}")
+
+    financial_brief = format_financial_brief_for_chair(financial_result) if financial_result else ""
+
     user_prompt = (
         f"Indication: {indication}\n"
         f"Mechanism/target: {mechanism}\n"
         + (f"Additional Context / Updates: {extra_context}\n" if extra_context else "")
         + f"\nAnalyst Claims by Discipline:\n"
-        f"{json.dumps(structured_input, indent=2, ensure_ascii=False)}"
+        f"{json.dumps(structured_input, indent=2, ensure_ascii=False)}\n\n"
+        + (f"{financial_brief}\n" if financial_brief else "")
     )
     raw = ask_claude_json(SYSTEM_PROMPT, user_prompt, max_tokens=8000)
     parsed = parse_claims(raw, stage="chair_agent_initial")
@@ -193,7 +225,8 @@ CRITICAL RULES:
             f"Indication: {indication}\n"
             f"Mechanism/target: {mechanism}\n"
             f"Please generate the missing committee claims for section(s): {', '.join(missing_sections)}.\n\n"
-            f"Analyst Claims Summary:\n"
+            + (f"{financial_brief}\n\n" if financial_brief else "")
+            + f"Analyst Claims Summary:\n"
             f"{json.dumps(structured_input, indent=2, ensure_ascii=False)}"
         )
         try:
@@ -241,12 +274,51 @@ CRITICAL RULES:
         )
         sanitized_synthesis.append(verdict_claim_obj)
 
-    # Programmatic rule enforcement: High Risk Override, Data Deficiency, and 5-10 Diligence Questions
+    # Programmatic rule enforcement: Deterministic Financials, High Risk Override, and 5-10 Diligence Questions
+    if financial_result is not None:
+        _enforce_deterministic_financials(sanitized_synthesis, financial_result)
     _enforce_risk_override_guardrail(all_claims, sanitized_synthesis)
     _enforce_diligence_questions_guardrail(all_claims, sanitized_synthesis, indication, mechanism)
 
     # Return combined list of all claims
     return all_claims + sanitized_synthesis
+
+
+def _enforce_deterministic_financials(
+    synthesis_claims: list[Claim],
+    financial_result: FinancialResult,
+) -> None:
+    """Enforce deterministic rNPV valuation and capital requirements calculated in Python.
+
+    The chair agent explains the numbers; code guarantees exact mathematical correctness.
+    """
+    val = financial_result.rnpv_millions
+    expected_rnpv_prefix = f"rNPV Scenarios: Low = ${val['low']:.1f}M, Base = ${val['base']:.1f}M, High = ${val['high']:.1f}M"
+
+    # 1. Enforce rNPV claim in recommendation section
+    rnpv_claim = next((c for c in synthesis_claims if c.section == "recommendation" and "rnpv" in c.claim.lower()), None)
+    if rnpv_claim:
+        rnpv_claim.claim = expected_rnpv_prefix
+        rnpv_claim.confidence = "high"
+        if not rnpv_claim.reasoning or "rnpv" not in rnpv_claim.reasoning.lower():
+            rnpv_claim.reasoning = (
+                f"Discounted cash flow rNPV modeled deterministically at {financial_result.discount_rate*100:.1f}% WACC. "
+                + (rnpv_claim.reasoning or "")
+            )
+    else:
+        det_claims = build_deterministic_financial_claims(financial_result)
+        verdict_idx = next(
+            (i for i, c in enumerate(synthesis_claims) if c.section == "recommendation" and c.claim in VALID_VERDICTS),
+            len(synthesis_claims),
+        )
+        synthesis_claims.insert(verdict_idx, det_claims[0])
+
+    # 2. Enforce capital_required claims
+    det_claims = build_deterministic_financial_claims(financial_result)
+    cap_claims = [c for c in synthesis_claims if c.section == "capital_required"]
+    has_numbers = any(re.search(r"\$\d+", c.claim) for c in cap_claims)
+    if not cap_claims or not has_numbers:
+        synthesis_claims.extend(det_claims[1:])
 
 
 def _enforce_risk_override_guardrail(upstream_claims: list[Claim], synthesis_claims: list[Claim]) -> None:

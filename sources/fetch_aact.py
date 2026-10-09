@@ -909,15 +909,18 @@ def _process_and_summarize(
         sorted_phases.setdefault(p, c)
     phase_sum = sum(sorted_phases.values())
 
-    # 7. Median enrollment (all matched studies in the indication) for Phase 2 / Phase 3
+    # 7. Median enrollment (all matched studies in the indication) for Phase 1 / Phase 2 / Phase 3
     median_parts = []
-    for label in ("Phase 2", "Phase 3"):
+    median_enrollment: dict[str, int] = {}
+    for label in ("Phase 1", "Phase 2", "Phase 3"):
         vals = [s["enrollment"] for s in studies.values()
-                if s["phase"] == label and s["enrollment"] and s["enrollment"] > 0]
-        median_parts.append(
-            f"{label}: median {int(statistics.median(vals))} (n={len(vals)} trials)" if vals
-            else f"{label}: no enrollment data"
-        )
+                if (label.lower() in s["phase"].lower()) and s["enrollment"] and s["enrollment"] > 0]
+        if vals:
+            med_val = int(statistics.median(vals))
+            median_enrollment[label] = med_val
+            median_parts.append(f"{label}: median {med_val} (n={len(vals)} trials)")
+        else:
+            median_parts.append(f"{label}: no enrollment data")
 
     # 8. Most common primary outcomes
     outcomes_text = "primary outcome data unavailable"
@@ -1002,6 +1005,7 @@ def _process_and_summarize(
         "url": search_url,
         "date_accessed": today,
         "raw_snippet": " ".join(a),
+        "median_enrollment": median_enrollment,
     }]
 
     # --- records B: one per failed trial
@@ -1092,6 +1096,7 @@ def _process_and_summarize(
         "other_arm_drugs": _named(other_arm),
         "alternative_therapies_in_indication": _named(alternatives),
         "direct_competitors_same_mechanism": direct,
+        "median_enrollment": median_enrollment,
         "sponsors": sponsor_breakdown,
         "top_terminated_trials": [
             {"nct_id": s["nct_id"], "status": s["status"], "enrollment": s["enrollment"],
