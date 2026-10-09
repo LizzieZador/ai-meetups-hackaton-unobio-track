@@ -88,6 +88,8 @@ def _build_record(name: str, app: dict, today: str) -> Optional[dict]:
     sponsor = app.get("sponsor_name", "") or ""
     products = app.get("products", []) or []
     brand_names = sorted({p.get("brand_name") for p in products if p.get("brand_name")})
+    routes = sorted({p.get("route") for p in products if p.get("route")})
+    dosage_forms = sorted({p.get("dosage_form") for p in products if p.get("dosage_form")})
 
     designations: set[str] = set()
     approval_dates: list[str] = []
@@ -132,6 +134,8 @@ def _build_record(name: str, app: dict, today: str) -> Optional[dict]:
         "application_number": app_number,
         "sponsor": sponsor,
         "brand_names": brand_names,
+        "routes": routes,
+        "dosage_forms": dosage_forms,
         "designations": sorted(designations),
         "first_approval_date": first_approval,
         "source": f"openFDA Drugs@FDA {app_number or name}",

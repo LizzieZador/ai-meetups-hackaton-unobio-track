@@ -20,17 +20,35 @@
     <ul id="history"></ul>
   </aside>
   <main>
-    <form id="search" class="topbar">
-      <button type="button" id="open-sidebar" class="hidden" title="Open sidebar" aria-label="Open sidebar">
-        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
-          <rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor"/>
-          <line x1="8" y1="3.5" x2="8" y2="16.5" stroke="currentColor"/>
-        </svg>
-      </button>
-      <input id="indication" type="text" placeholder="Indication, e.g. Non-Small Cell Lung Cancer" autocomplete="off">
-      <input id="mechanism" type="text" placeholder="Mechanism / Target, e.g. KRAS G12C" autocomplete="off">
-      <button id="evaluate" type="submit" disabled>Evaluate</button>
-    </form>
+    <header class="topbar">
+      <form id="search" class="search-form">
+        <button type="button" id="open-sidebar" class="hidden" title="Open sidebar" aria-label="Open sidebar">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+            <rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor"/>
+            <line x1="8" y1="3.5" x2="8" y2="16.5" stroke="currentColor"/>
+          </svg>
+        </button>
+        <div id="search-detailed" class="search-fields">
+          <input id="indication" type="text" placeholder="Indication, e.g. Non-Small Cell Lung Cancer" autocomplete="off">
+          <input id="mechanism" type="text" placeholder="Mechanism / Target, e.g. KRAS G12C" autocomplete="off">
+        </div>
+        <div id="search-quick" class="search-fields hidden">
+          <input id="query" type="text" placeholder="e.g. KRAS G12C | Non-Small Cell Lung Cancer" autocomplete="off">
+        </div>
+        <button type="button" id="search-mode-toggle" class="mode-toggle">Quick search</button>
+        <button id="evaluate" type="submit" disabled>Evaluate</button>
+      </form>
+
+      <section id="assistant" class="assistant" aria-label="Assistant">
+        <div class="assistant-head">Assistant</div>
+        <div id="assistant-log" class="assistant-log hidden" aria-live="polite"></div>
+        <form id="assistant-form" class="assistant-form">
+          <input id="assistant-input" type="text" autocomplete="off"
+                 placeholder="Ask about this evaluation…" aria-label="Message the assistant">
+          <button id="assistant-send" type="submit" disabled>Send</button>
+        </form>
+      </section>
+    </header>
     <section id="content"><p class="empty">Search a drug, an indication or a mechanism to build an evaluation.</p></section>
   </main>
 

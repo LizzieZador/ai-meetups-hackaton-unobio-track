@@ -1,13 +1,15 @@
 """Web UI backend — serves the static front-end in web/ and exposes the pipeline as JSON.
 
 GET  /              -> web/index.html (search sidebar + the 12-card grid)
-POST /api/evaluate  -> {"indication": "...", "mechanism": "..."} -> {verdict, cards, cost}
+POST /api/evaluate  -> {"indication": "...", "mechanism": "..."} OR {"query": "mechanism | indication"}
+                       -> {verdict, cards, cost}
 
 Card layout and the mapping from claim sections / fetched sources onto cards
 lives in cards.py; this module only turns a query into one pipeline run.
 The Streamlit app (app.py) stays as an alternative UI; both call run_pipeline().
 Run: python server.py  (http://127.0.0.1:5000)
 """
+import re
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -23,6 +25,20 @@ VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
 app = Flask(__name__, static_folder=None)
 
 
+def split_query(query: str) -> tuple[str, str]:
+    """Quick-search's one combined box -> (indication, mechanism).
+
+    "KRAS G12C inhibitor | NSCLC" / "... for NSCLC" / "... in NSCLC" split into
+    mechanism and indication; a bare query (no separator) is used for both so
+    the pipeline still runs — case-insensitivity and the mechanism-fallback in
+    collect_sources() already handle a single generic word reasonably.
+    """
+    parts = re.split(r"\s*\|\s*|\s+(?:for|in)\s+", query, maxsplit=1, flags=re.I)
+    if len(parts) == 2 and all(p.strip() for p in parts):
+        return parts[1].strip(), parts[0].strip()
+    return query, query
+
+
 def build_report(indication: str, mechanism: str, claims: list[Claim], cost: dict, sources: dict) -> dict:
     verdict_claim = next(
         (c for c in claims if c.section == "recommendation" and c.claim in VERDICTS), None
@@ -33,7 +49,7 @@ def build_report(indication: str, mechanism: str, claims: list[Claim], cost: dic
         "mechanism": mechanism,
         "verdict": verdict_claim.claim if verdict_claim else None,
         "verdict_reasoning": (verdict_claim.reasoning if verdict_claim else None),
-        "cards": build_cards(claims, sources, analogs),
+        "cards": build_cards(claims, sources, analogs, mechanism),
         "cost": cost,
     }
 
@@ -51,8 +67,12 @@ def static_files(name):
 @app.post("/api/evaluate")
 def evaluate():
     body = request.get_json(silent=True) or {}
-    indication = (body.get("indication") or "").strip()
-    mechanism = (body.get("mechanism") or "").strip()
+    query = (body.get("query") or "").strip()
+    if query:
+        indication, mechanism = split_query(query)
+    else:
+        indication = (body.get("indication") or "").strip()
+        mechanism = (body.get("mechanism") or "").strip()
     if not indication or not mechanism:
         return jsonify(error="Both Indication and Mechanism/Target are required."), 400
     try:

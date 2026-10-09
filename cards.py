@@ -1,9 +1,9 @@
-"""The site's 12 intelligence cards — the view model behind the card grid.
+"""The site's 10 intelligence cards — the view model behind the card grid.
 
 The claim taxonomy in schema.py follows the task brief's "Required Output" list
 verbatim, and report.py renders the markdown report in exactly that shape (a
 graded deliverable — it is not changed here). The *site* presents the same
-material as 12 topic cards instead, so this module is the single place that maps
+material as topic cards instead, so this module is the single place that maps
 brief sections and fetched source records onto what the UI shows.
 
 Each card declares where its content comes from:
@@ -11,13 +11,13 @@ Each card declares where its content comes from:
   raw_sources    — raw_data.SOURCE_ORDER keys whose fetched records land here
 
 A card with neither has no connected source yet (we fetch nothing that answers
-it — e.g. patent databases, earnings calls). The UI says exactly that instead of
-"No results yet", so an unwired card is never mistaken for a run that found
-nothing.
+it — e.g. litigation records). The UI says exactly that instead of "No results
+yet", so an unwired card is never mistaken for a run that found nothing.
 
-`recommendation` and `diligence_questions` claims deliberately map to no card:
-they are the committee's verdict layer, rendered above the grid by the front-end,
-not one of the twelve topics.
+`recommendation` claims deliberately map to no card: that's the one top-line
+verdict rendered above the grid by the front-end. `diligence_questions`
+claims land in the "risk_diligence" card below, alongside key_risks/
+critical_unknowns and the green-flag regulatory table.
 """
 from card_tables import VIEW_BUILDERS
 from schema import Claim
@@ -72,7 +72,7 @@ CARDS: list[dict] = [
         "title": "Patent & IP review",
         "subtitle": "Lens.org patent records; litigation and freedom-to-operate analysis not covered",
         "claim_sections": [],
-        "raw_sources": ["patents"],
+        "raw_sources": ["patents", "regulatory"],
     },
     {
         "id": "trial_design",
@@ -82,41 +82,24 @@ CARDS: list[dict] = [
         "raw_sources": ["clinicaltrials"],
     },
     {
-        "id": "manufacturing",
-        "title": "Manufacturing, supply chain & cost of goods",
-        "subtitle": "",
-        "claim_sections": ["capital_required"],
-        "raw_sources": [],
-        "data_gap_note": "Not available — no connected source for manufacturing, supply chain or cost-of-goods data.",
-    },
-    {
-        "id": "red_flags",
-        "title": "Red flag monitor",
-        "subtitle": "Safety reports, regulatory actions, litigation, data-room review",
-        "claim_sections": ["key_risks", "critical_unknowns"],
-        "raw_sources": ["clinicaltrials"],
-    },
-    {
-        "id": "green_flags",
-        "title": "Green flag & regulatory advantage monitor",
-        "subtitle": "Regulatory databases, company disclosures, academic literature",
-        "claim_sections": [],
+        "id": "risk_diligence",
+        "title": "Risk & regulatory diligence",
+        "subtitle": "Recommendation, precaution, regulatory advantage and open diligence questions",
+        "claim_sections": ["key_risks", "critical_unknowns", "diligence_questions"],
         "raw_sources": ["regulatory"],
     },
     {
         "id": "regulatory_timeline",
         "title": "Regulatory timeline",
-        "subtitle": "Trial registries, FDA approval records",
+        "subtitle": "Trial registries, FDA approval records — stage reached per drug",
         "claim_sections": [],
-        "raw_sources": ["aact", "regulatory"],
+        "raw_sources": ["aact", "regulatory", "clinicaltrials"],
+        "include_analogs": True,
     },
 ]
 
-# Claim sections rendered above the grid as the committee's verdict, not in a card.
-VERDICT_SECTIONS = ["recommendation", "diligence_questions"]
 
-
-def build_cards(claims: list[Claim], sources: dict, analogs: list[dict]) -> list[dict]:
+def build_cards(claims: list[Claim], sources: dict, analogs: list[dict], mechanism: str = "") -> list[dict]:
     """Group claims + fetched records into the 12 cards the front-end renders."""
     by_section: dict[str, list[Claim]] = {}
     for c in claims:
@@ -154,7 +137,7 @@ def build_cards(claims: list[Claim], sources: dict, analogs: list[dict]) -> list
             })
 
         view_builder = VIEW_BUILDERS.get(spec["id"])
-        view = view_builder(by_section, sources, analogs) if view_builder else {"view": "list"}
+        view = view_builder(by_section, sources, analogs, mechanism) if view_builder else {"view": "list"}
 
         cards.append({
             "id": spec["id"],
@@ -186,13 +169,3 @@ def _card_sources(items: list[dict]) -> list[dict]:
             "date_accessed": item.get("date_accessed"),
         })
     return out
-
-
-def build_verdict_claims(claims: list[Claim]) -> list[dict]:
-    """Recommendation + diligence-question claims, in VERDICT_SECTIONS order."""
-    return [
-        c.to_dict()
-        for section in VERDICT_SECTIONS
-        for c in claims
-        if c.section == section
-    ]

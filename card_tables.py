@@ -51,7 +51,7 @@ _GAP_KEYWORDS = ("unmet need", "gap", "limitation", "fail", "resistance", "inade
 _TPP_KEYWORDS = ("target product profile", "differentiat", "profile", "positioning", "advantage over")
 
 
-def build_unmet_need_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+def build_unmet_need_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     pool = _claims(claims_by_section, "human_translation_thesis", "commercial_opportunity")
 
     def bucket(keywords: tuple[str, ...]) -> str:
@@ -81,10 +81,10 @@ def _clean_filer_name(name: str) -> str:
     return cleaned or "Unknown filer"
 
 
-_DOUGHNUT_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"]
+_PIE_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"]
 
 
-def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     records = sources.get("market_news", [])
     if not records:
         return {"view": "graph", "chart": None}
@@ -102,12 +102,12 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
     ]
 
     chart = {
-        "type": "doughnut",
+        "type": "pie",
         "data": {
             "labels": labels,
             "datasets": [{
                 "data": [n for _, n in top],
-                "backgroundColor": _DOUGHNUT_PALETTE[: len(top)],
+                "backgroundColor": _PIE_PALETTE[: len(top)],
                 "borderColor": "#ffffff",
                 "borderWidth": 2,
                 "hoverOffset": 6,
@@ -116,7 +116,6 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
         "options": {
             "responsive": True,
             "maintainAspectRatio": False,
-            "cutout": "62%",
             "plugins": {
                 "legend": {
                     "position": "bottom",
@@ -135,30 +134,81 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
 
 
 # ---------------------------------------------------------------------------
-# Card 3 — Scientific evidence: the claims themselves, tabulated.
+# Card 3 — Scientific evidence: the claims themselves, tabulated. The
+# scientific agent's prompt already tags each claim's text with a leading
+# bracketed research-angle category (e.g. "[human genetics] ...", "[animal
+# model] ..." — see agents/scientific_agent.py's SYSTEM_PROMPT) as a free-text
+# convention, not a schema field. Pull it out into its own column instead of
+# leaving it duplicated inside the Finding text.
 # ---------------------------------------------------------------------------
-def build_scientific_evidence_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+_CATEGORY_PREFIX = re.compile(r"^\s*\[([^\[\]]{2,40})\]\s*")
+
+
+def _split_category(claim_text: str) -> tuple[str, str]:
+    m = _CATEGORY_PREFIX.match(claim_text or "")
+    if not m:
+        return NA, claim_text
+    return m.group(1).strip().title(), _CATEGORY_PREFIX.sub("", claim_text, count=1)
+
+
+def build_scientific_evidence_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     rows = []
     for c in claims_by_section.get("scientific_thesis", []):
+        category, finding = _split_category(c.claim)
         if c.type == "evidence":
             source_cell = _cell(c.source, c.url)
             date_cell = c.date_accessed or NA
         else:
             source_cell = f"Inference (confidence: {c.confidence})" if c.confidence else "Inference"
             date_cell = NA
-        rows.append({"Finding": c.claim, "Source": source_cell, "Date": date_cell})
-    return {"view": "table", "columns": ["Finding", "Source", "Date"], "rows": rows, "show_claims_below": False}
+        rows.append({"Category": category, "Finding": finding, "Source": source_cell, "Date": date_cell})
+    return {
+        "view": "table",
+        "columns": ["Category", "Finding", "Source", "Date"],
+        "rows": rows,
+        "show_claims_below": False,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Card 5 — Competitive landscape: Drug / Labeler / MoA.
-# Drug + MoA come from the Open Targets analog list; Labeler is a
-# cross-reference against the openFDA (regulatory) records already fetched
-# for those same drug names — a real join of already-fetched data, not a new
-# fact. The card's own competitive_landscape claims are a different,
-# complementary narrative, so they're kept below (show_claims_below=True).
+# Card 4 — Patient population, treatment dynamics & TAM: no table/graph
+# (the underlying epidemiology CSV is still unverified — see data_gap_note in
+# cards.py), but per mentor feedback the commercial_opportunity list should
+# favor real evidence over inference. This stays "view": "list" — it only
+# reorders/caps the same items cards.py already builds for this card, moving
+# every evidence claim/raw record ahead of inference claims and keeping at
+# most 3 of the inference ones. Nothing is dropped from the underlying data,
+# only from what's displayed first (and how much inference piles up).
 # ---------------------------------------------------------------------------
-def build_competitive_landscape_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+_MAX_INFERENCE_ITEMS = 3
+
+
+def build_patient_population_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
+    claim_items = [{"kind": "claim", **c.to_dict()} for c in claims_by_section.get("commercial_opportunity", [])]
+    record_items = [{"kind": "record", **r} for r in sources.get("commercial", [])]
+
+    non_inference = record_items + [i for i in claim_items if i.get("type") != "inference"]
+    inference = [i for i in claim_items if i.get("type") == "inference"][:_MAX_INFERENCE_ITEMS]
+
+    return {"view": "list", "items": non_inference + inference}
+
+
+# ---------------------------------------------------------------------------
+# Card 5 — Competitive landscape: Drug / Clinical Stage / Target / Modality /
+# Lead Sponsor / MoA / Source.
+# Drug, Clinical Stage, MoA come from the Open Targets analog list (Clinical
+# Stage was already fetched but not shown before). Target is the report's own
+# query mechanism — every analog on this card is, by definition, an analog on
+# that one target, so it's accurate per row, not a per-drug fact anyone had
+# to look up. Lead Sponsor is a cross-reference against the openFDA
+# (regulatory) records already fetched for those same drug names (header
+# relabeled from "Labeler" per the team's decision — same underlying data).
+# Source links to that same openFDA record. Modality has no source anywhere
+# in the pipeline (checked every fetcher) — "Not available", not a guess.
+# The card's own competitive_landscape claims are a different, complementary
+# narrative, so they're kept below (show_claims_below=True).
+# ---------------------------------------------------------------------------
+def build_competitive_landscape_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     reg_by_name = {
         (r.get("drug_name") or "").strip().lower(): r
         for r in sources.get("regulatory", [])
@@ -168,48 +218,82 @@ def build_competitive_landscape_view(claims_by_section: dict, sources: dict, ana
     for d in analogs:
         name = d.get("name") or NA
         reg = reg_by_name.get((d.get("name") or "").strip().lower())
-        labeler = reg.get("sponsor") if reg and reg.get("sponsor") else NA
-        rows.append({"Drug": name, "Labeler": labeler, "MoA": d.get("mechanism") or NA})
-    return {"view": "table", "columns": ["Drug", "Labeler", "MoA"], "rows": rows, "show_claims_below": True}
+        lead_sponsor = reg.get("sponsor") if reg and reg.get("sponsor") else NA
+        source_cell = _cell("openFDA Drugs@FDA", reg.get("url")) if reg and reg.get("url") else NA
+        rows.append({
+            "Drug": name,
+            "Clinical Stage": d.get("stage") or NA,
+            "Target": mechanism or NA,
+            "Modality": NA,
+            "Lead Sponsor": lead_sponsor,
+            "MoA": d.get("mechanism") or NA,
+            "Source": source_cell,
+        })
+    return {
+        "view": "table",
+        "columns": ["Drug", "Clinical Stage", "Target", "Modality", "Lead Sponsor", "MoA", "Source"],
+        "rows": rows,
+        "show_claims_below": True,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Card 6 — Pipeline & drugs in development: Drug / Threat / Sponsor / Indication.
-# "Threat" has no scoring source anywhere in the pipeline (confirmed by audit)
-# — every row shows "Not available" rather than an invented score.
+# Card 6 — Pipeline & drugs in development: Drug / Sponsor. "Threat" (no
+# scoring source anywhere) and "Indication" (redundant — the whole report is
+# already scoped to one indication) were dropped per the team's decision.
 # ---------------------------------------------------------------------------
-def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     rows = []
     for r in sources.get("clinicaltrials", []):
         rows.append({
             "Drug / Trial": _cell(r.get("briefTitle"), r.get("url")),
-            "Threat": NA,
             "Sponsor": r.get("leadSponsor") or NA,
-            "Indication": r.get("indication") or NA,
         })
     return {
         "view": "table",
-        "columns": ["Drug / Trial", "Threat", "Sponsor", "Indication"],
+        "columns": ["Drug / Trial", "Sponsor"],
         "rows": rows,
         "show_claims_below": False,
     }
 
 
 # ---------------------------------------------------------------------------
-# Card 7 — Patent & IP review: direct pass-through of Lens.org fields.
+# Card 7 — Patent & IP review: Lens.org fields plus Drug / Route of
+# administration / Expiration date. Drug is the patent's own matched_term
+# (the name it was searched for). Route comes from a cross-reference against
+# the same openFDA (regulatory) records card 5 uses for Lead Sponsor — Lens
+# has no route data, openFDA does (now captured, see fetch_regulatory.py).
+# Expiration date: checked live against Lens's API — its legal_status object
+# carries only a filing-date calculation log and patent_status (PENDING/
+# GRANTED/etc.), no expiration/term field at all, so this is honestly "Not
+# available" rather than a guessed filing-date-plus-20-years estimate (patent
+# term extensions/adjustments make that kind of guess unreliable anyway).
 # ---------------------------------------------------------------------------
-def build_patent_ip_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+def build_patent_ip_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
+    reg_by_name = {
+        (r.get("drug_name") or "").strip().lower(): r
+        for r in sources.get("regulatory", [])
+        if r.get("drug_name")
+    }
     rows = []
     for r in sources.get("patents", []):
+        reg = reg_by_name.get((r.get("matched_term") or "").strip().lower())
+        routes = reg.get("routes") if reg else None
         rows.append({
+            "Drug": r.get("matched_term") or NA,
             "Jurisdiction": r.get("jurisdiction") or NA,
             "Doc #": _cell(r.get("doc_number"), r.get("url")),
             "Applicants": ", ".join(r.get("applicants") or []) or NA,
             "Status": r.get("patent_status") or NA,
+            "Route of Administration": ", ".join(routes) if routes else NA,
+            "Expiration Date": NA,
         })
     return {
         "view": "table",
-        "columns": ["Jurisdiction", "Doc #", "Applicants", "Status"],
+        "columns": [
+            "Drug", "Jurisdiction", "Doc #", "Applicants", "Status",
+            "Route of Administration", "Expiration Date",
+        ],
         "rows": rows,
         "show_claims_below": False,
     }
@@ -217,16 +301,20 @@ def build_patent_ip_view(claims_by_section: dict, sources: dict, analogs: list[d
 
 # ---------------------------------------------------------------------------
 # Card 8 — Clinical trial design intelligence: raw ClinicalTrials.gov facts,
-# tabulated. The card's own clinical_development_plan claims (proposed trial
-# design, PTRS, biomarker strategy) are a different, complementary narrative
-# built from those facts, not a duplicate of them — kept below the table.
+# tabulated, with a Drug column between NCT ID and Phase — the report's own
+# query mechanism (the intervention these trials were actually searched
+# for), same accurate-by-construction pattern as card 5's Target column. The
+# card's own clinical_development_plan claims (proposed trial design, PTRS,
+# biomarker strategy) are a different, complementary narrative built from
+# these facts, not a duplicate of them — kept below the table.
 # ---------------------------------------------------------------------------
-def build_trial_design_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
+def build_trial_design_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     rows = []
     for r in sources.get("clinicaltrials", []):
         enrollment = r.get("enrollmentCount")
         rows.append({
             "NCT ID": _cell(r.get("nctId") or NA, r.get("url")),
+            "Drug": mechanism or NA,
             "Phase": ", ".join(r.get("phases") or []) or NA,
             "Status": r.get("overallStatus") or NA,
             "Enrollment": enrollment if enrollment is not None else NA,
@@ -235,96 +323,171 @@ def build_trial_design_view(claims_by_section: dict, sources: dict, analogs: lis
         })
     return {
         "view": "table",
-        "columns": ["NCT ID", "Phase", "Status", "Enrollment", "Sponsor", "Start Date"],
+        "columns": ["NCT ID", "Drug", "Phase", "Status", "Enrollment", "Sponsor", "Start Date"],
         "rows": rows,
         "show_claims_below": True,
     }
 
 
 # ---------------------------------------------------------------------------
-# Card 10 — Red flag monitor: terminated/stopped trials, tabulated from the
-# same raw ClinicalTrials.gov records as card 8 (filtered to whyStopped).
-# The card's own key_risks/critical_unknowns claims are a different,
-# complementary narrative — kept below the table.
+# New card 9 — Risk & regulatory diligence: merges the old "Red flag monitor"
+# + "Green flag monitor" cards, plus diligence_questions (which, after the
+# verdict panel was removed from the page two rounds ago, had stopped being
+# rendered anywhere on the site at all — this restores them). Four stacked
+# sections in one "composite" card (a new view type app.js renders by
+# iterating `sections`, each already shaped so the existing renderItem/
+# renderTable helpers handle it unchanged):
+#   1. Recommendation — a short, code-templated sentence, deterministic from
+#      this card's own counts (flagged risks / regulatory designations found).
+#      Distinct from the page's main Invest/Conditional/Do Not Invest verdict
+#      (per the team's decision) — this is a diligence-focused note, not a
+#      second investment verdict.
+#   2. Precaution — the old red_flags content (key_risks + critical_unknowns
+#      claims), relabeled.
+#   3. Green flags table — the old green_flags table, unchanged.
+#   4. Diligence questions — the diligence_questions claims the chair agent
+#      already produces every run.
 # ---------------------------------------------------------------------------
-def build_red_flags_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
-    rows = []
-    for r in sources.get("clinicaltrials", []):
-        why = r.get("whyStopped")
-        if not why:
-            continue
-        rows.append({
-            "Trial": _cell(r.get("briefTitle") or r.get("nctId") or NA, r.get("url")),
-            "Status": r.get("overallStatus") or NA,
-            "Why Stopped": why,
-        })
-    return {
-        "view": "table",
-        "columns": ["Trial", "Status", "Why Stopped"],
-        "rows": rows,
-        "show_claims_below": True,
-    }
+def _risk_recommendation_text(key_risks: list[Claim], green_rows: list[dict]) -> str:
+    high_risk = sum(
+        1 for c in key_risks
+        if (c.risk_score or 0) >= 0.3 or (c.probability or 0) >= 0.5
+    )
+    designation_count = sum(len(r.get("designations") or []) for r in green_rows)
+    risk_part = (
+        f"{high_risk} high-severity risk(s) flagged" if high_risk
+        else (f"{len(key_risks)} risk(s) flagged, none high-severity" if key_risks else "no risks flagged")
+    )
+    green_part = (
+        f"{designation_count} regulatory designation(s) found on same-mechanism drugs" if designation_count
+        else "no regulatory designations found on same-mechanism drugs"
+    )
+    return f"{risk_part.capitalize()}; {green_part}."
 
 
-# ---------------------------------------------------------------------------
-# Card 11 — Green flag & regulatory advantage monitor: direct pass-through
-# of openFDA fields.
-# ---------------------------------------------------------------------------
-def build_green_flags_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
-    rows = []
+def build_risk_diligence_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
+    key_risks = claims_by_section.get("key_risks", [])
+    critical_unknowns = claims_by_section.get("critical_unknowns", [])
+    diligence = claims_by_section.get("diligence_questions", [])
+
+    green_rows = []
     for r in sources.get("regulatory", []):
         brands = r.get("brand_names") or []
         designations = r.get("designations") or []
-        rows.append({
+        green_rows.append({
             "Drug": r.get("drug_name") or NA,
             "Sponsor": r.get("sponsor") or NA,
             "Brand": ", ".join(brands) or NA,
             "Designations": ", ".join(designations) or NA,
             "First Approval": _cell(r.get("first_approval_date") or NA, r.get("url")),
         })
+
+    precaution_items = [{"kind": "claim", **c.to_dict()} for c in key_risks + critical_unknowns]
+    diligence_items = [{"kind": "claim", **c.to_dict()} for c in diligence]
+
     return {
-        "view": "table",
-        "columns": ["Drug", "Sponsor", "Brand", "Designations", "First Approval"],
-        "rows": rows,
-        "show_claims_below": False,
+        "view": "composite",
+        "sections": [
+            {"kind": "text", "title": "Recommendation", "text": _risk_recommendation_text(key_risks, green_rows)},
+            {"kind": "list", "title": "Precaution", "items": precaution_items},
+            {
+                "kind": "table", "title": "Green Flags",
+                "columns": ["Drug", "Sponsor", "Brand", "Designations", "First Approval"],
+                "rows": green_rows,
+            },
+            {"kind": "list", "title": "Diligence Questions", "items": diligence_items},
+        ],
     }
 
 
 # ---------------------------------------------------------------------------
-# Card 12 — Regulatory timeline: same openFDA records as card 11, sorted by
-# first approval date so it reads as an actual timeline.
+# New card 10 — was "Regulatory timeline": a visual stage-progress row per
+# analog drug (Phase 1 -> Phase 2 -> Phase 3 -> Approved), not a table.
+# The furthest-reached stage is derived deterministically: the highest trial
+# phase seen for that drug's name in sources["clinicaltrials"], or "Approved"
+# if it has a first_approval_date in sources["regulatory"] — never a
+# fabricated date, only "which stages this drug's public record has reached".
+# app.js renders this as a row of dots/segments, not a Chart.js chart (no
+# charting library has a native stage-stepper, and we don't have reliable
+# per-stage dates to plot a real timeline axis).
 # ---------------------------------------------------------------------------
-def build_regulatory_timeline_view(claims_by_section: dict, sources: dict, analogs: list[dict]) -> dict:
-    records = [r for r in sources.get("regulatory", []) if r.get("first_approval_date")]
-    records.sort(key=lambda r: r["first_approval_date"])
-    rows = [
-        {
-            "Drug": r.get("drug_name") or NA,
-            "First Approval": r.get("first_approval_date") or NA,
-            "Designations": ", ".join(r.get("designations") or []) or NA,
-        }
-        for r in records
-    ]
-    return {
-        "view": "table",
-        "columns": ["Drug", "First Approval", "Designations"],
-        "rows": rows,
-        "show_claims_below": False,
+_STAGES = ["Phase 1", "Phase 2", "Phase 3", "Approved"]
+
+
+def _phase_rank(phase_text: str) -> int:
+    """Highest numbered phase mentioned in a ClinicalTrials.gov phases string
+    like "PHASE2, PHASE3" -> 2 (0-indexed into _STAGES), or -1 if none."""
+    nums = [int(n) for n in re.findall(r"PHASE(\d)", (phase_text or "").upper())]
+    return max(nums) - 1 if nums else -1
+
+
+def _opentargets_stage_rank(stage: str | None) -> int:
+    """Open Targets' own maxClinicalStage per drug, e.g. "PHASE_2"/"APPROVAL"
+    — the primary, most reliable signal (one value per drug, straight from
+    Open Targets), vs. the ClinicalTrials.gov title-text match below, which
+    is only a fallback for drugs Open Targets didn't already rank."""
+    stage = (stage or "").upper()
+    if stage == "APPROVAL":
+        return len(_STAGES) - 1
+    m = re.match(r"PHASE_(\d)", stage)
+    return int(m.group(1)) - 1 if m else -1
+
+
+def build_regulatory_timeline_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
+    reg_by_name = {
+        (r.get("drug_name") or "").strip().lower(): r
+        for r in sources.get("regulatory", [])
+        if r.get("drug_name")
     }
+
+    # Fallback: highest phase rank observed per drug name from CT.gov records
+    # whose briefTitle mentions that drug — the only link available between a
+    # named analog and a specific trial record (no structured drug-name field
+    # exists on ClinicalTrials.gov records, confirmed by the fetcher audit).
+    # Only used for a drug Open Targets itself has no stage ranking for.
+    best_rank_by_name: dict[str, int] = {}
+    for r in sources.get("clinicaltrials", []):
+        title = (r.get("briefTitle") or "").lower()
+        rank = _phase_rank(", ".join(r.get("phases") or []))
+        if rank < 0:
+            continue
+        for name in reg_by_name.keys() | {d.get("name", "").strip().lower() for d in analogs}:
+            if name and name in title:
+                best_rank_by_name[name] = max(best_rank_by_name.get(name, -1), rank)
+
+    rows = []
+    seen_names: set[str] = set()
+    for d in analogs:
+        name = (d.get("name") or "").strip()
+        key = name.lower()
+        if not name or key in seen_names:
+            continue
+        seen_names.add(key)
+
+        approved = key in reg_by_name and bool(reg_by_name[key].get("first_approval_date"))
+        reached = max(
+            len(_STAGES) - 1 if approved else -1,
+            _opentargets_stage_rank(d.get("stage")),
+            best_rank_by_name.get(key, -1),
+        )
+        rows.append({
+            "drug": name,
+            "stages": _STAGES,
+            "reached_index": reached,  # -1 = nothing observed yet
+        })
+
+    return {"view": "timeline", "rows": rows}
 
 
 VIEW_BUILDERS = {
     "unmet_need": build_unmet_need_view,
     "market_sentiment": build_market_sentiment_view,
     "scientific_evidence": build_scientific_evidence_view,
+    "patient_population": build_patient_population_view,
     "competitive_landscape": build_competitive_landscape_view,
     "pipeline": build_pipeline_view,
     "patent_ip": build_patent_ip_view,
     "trial_design": build_trial_design_view,
-    "red_flags": build_red_flags_view,
-    "green_flags": build_green_flags_view,
+    "risk_diligence": build_risk_diligence_view,
     "regulatory_timeline": build_regulatory_timeline_view,
 }
-
-# Cards 4 (patient_population) and 9 (manufacturing) deliberately have no
-# entry here — see their "data_gap_note" in cards.py.

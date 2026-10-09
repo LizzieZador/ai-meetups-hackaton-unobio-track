@@ -75,6 +75,7 @@ function renderHistory(activeKey) {
       <span class="when">${esc(whenLabel(s.at))} · ${filledCount(s.report)}/${s.report.cards.length}</span>`;
     li.title = historyLabel(s);
     li.onclick = () => {
+      setSearchMode("detailed");
       $("indication").value = s.indication;
       $("mechanism").value = s.mechanism;
       $("evaluate").disabled = false;
@@ -136,6 +137,44 @@ function renderTable(card) {
   return `<table class="card-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 
+function renderComposite(card) {
+  return card.sections
+    .map((sec) => {
+      let body;
+      if (sec.kind === "text") {
+        body = `<p class="composite-text">${esc(sec.text)}</p>`;
+      } else if (sec.kind === "table") {
+        body = renderTable({ columns: sec.columns, rows: sec.rows, wired: true });
+      } else {
+        body = sec.items.length
+          ? sec.items.map(renderItem).join("")
+          : '<p class="placeholder">No results yet</p>';
+      }
+      return `<div class="composite-section"><h3>${esc(sec.title)}</h3>${body}</div>`;
+    })
+    .join("");
+}
+
+function renderTimeline(card) {
+  if (!card.rows || !card.rows.length) {
+    return `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
+  }
+  return `<div class="timeline-list">${card.rows
+    .map((r) => {
+      const track = r.stages
+        .map((s, i) => {
+          const state = i > r.reached_index ? "pending" : i === r.reached_index ? "current" : "done";
+          return `<div class="timeline-stage ${state}"><span class="dot"></span><span class="label">${esc(s)}</span></div>`;
+        })
+        .join("");
+      return `<div class="timeline-row">
+        <div class="timeline-drug">${esc(r.drug)}</div>
+        <div class="timeline-track">${track}</div>
+      </div>`;
+    })
+    .join("")}</div>`;
+}
+
 function renderCardBody(card, chartIdPrefix) {
   let inner;
   if (card.view === "table") {
@@ -144,6 +183,10 @@ function renderCardBody(card, chartIdPrefix) {
     inner = card.chart
       ? `<div class="chart-wrap"><canvas id="${chartIdPrefix}-${esc(card.id)}"></canvas></div>`
       : `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
+  } else if (card.view === "composite") {
+    inner = renderComposite(card);
+  } else if (card.view === "timeline") {
+    inner = renderTimeline(card);
   } else {
     inner = renderItems(card);
   }
@@ -228,12 +271,19 @@ function show(report) {
   current = report;
   const v = report.verdict;
   const vClass = v === "Do Not Invest" ? "no" : v === "Conditional" ? "cond" : "";
+  const hasReasoning = !!report.verdict_reasoning;
   const c = report.cost || {};
   $("content").innerHTML = `
     <div class="report-head">
       <h1>${esc(report.mechanism)} <span class="label">in</span> ${esc(report.indication)}</h1>
-      ${v ? `<span class="verdict ${vClass}">${esc(v)}</span>` : ""}
-      ${report.verdict_reasoning ? `<p class="verdict-reasoning">${esc(report.verdict_reasoning)}</p>` : ""}
+      ${
+        v
+          ? `<span class="verdict-wrap">
+               <button type="button" class="verdict ${vClass}"${hasReasoning ? "" : " disabled"}>${esc(v)}</button>
+               ${hasReasoning ? `<span class="verdict-tip" role="tooltip">${esc(report.verdict_reasoning)}</span>` : ""}
+             </span>`
+          : ""
+      }
     </div>
     <div class="grid">${report.cards.map(renderCard).join("")}</div>
     <p class="cost">~$${esc(c.approx_cost_usd)} · ${esc(c.calls)} calls · ${esc(c.model)}</p>`;
@@ -243,19 +293,33 @@ function show(report) {
   report.cards
     .filter((card) => card.view === "graph" && card.chart)
     .forEach((card) => mountChart(`chart-grid-${card.id}`, card.chart));
+  if (hasReasoning) {
+    const wrap = $("content").querySelector(".verdict-wrap");
+    wrap.querySelector(".verdict").onclick = () => wrap.classList.toggle("pinned");
+  }
 }
 
-async function evaluate(indication, mechanism) {
+// One global listener (not re-added per search) closes a pinned verdict
+// tooltip when clicking anywhere outside it.
+document.addEventListener("click", (e) => {
+  const wrap = $("content").querySelector(".verdict-wrap.pinned");
+  if (wrap && !wrap.contains(e.target)) wrap.classList.remove("pinned");
+});
+
+async function evaluate(body) {
   $("evaluate").disabled = true;
   $("content").innerHTML = '<p class="loading">Collecting sources and running the committee… this can take a minute.</p>';
   try {
     const res = await fetch("/api/evaluate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ indication, mechanism }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
     if (!res.ok || data.error) throw new Error(data.error || `Server error (${res.status})`);
+    // The server resolves "query" into indication/mechanism either way, so
+    // history always keys off its response, not the raw form input.
+    const { indication, mechanism } = data;
     searches = [
       { indication, mechanism, at: Date.now(), report: data },
       ...searches.filter((s) => !(s.indication === indication && s.mechanism === mechanism)),
@@ -266,25 +330,78 @@ async function evaluate(indication, mechanism) {
   } catch (e) {
     $("content").innerHTML = `<p class="error">${esc(e.message)}</p>`;
   } finally {
-    $("evaluate").disabled = !($("indication").value.trim() && $("mechanism").value.trim());
+    updateEvaluateEnabled();
   }
 }
 
-function updateEvaluateEnabled() {
-  $("evaluate").disabled = !($("indication").value.trim() && $("mechanism").value.trim());
+// "detailed" = separate Indication/Mechanism fields (default); "quick" = one
+// combined box, parsed server-side the same way the old single-field search
+// used to work ("mechanism | indication" / "... for ..." / "... in ...").
+let searchMode = "detailed";
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  $("search-detailed").classList.toggle("hidden", mode !== "detailed");
+  $("search-quick").classList.toggle("hidden", mode !== "quick");
+  $("search-mode-toggle").textContent = mode === "detailed" ? "Quick search" : "Detailed search";
+  updateEvaluateEnabled();
 }
+
+function updateEvaluateEnabled() {
+  $("evaluate").disabled =
+    searchMode === "detailed"
+      ? !($("indication").value.trim() && $("mechanism").value.trim())
+      : !$("query").value.trim();
+}
+
+$("search-mode-toggle").onclick = () => setSearchMode(searchMode === "detailed" ? "quick" : "detailed");
 
 $("search").onsubmit = (e) => {
   e.preventDefault();
-  const indication = $("indication").value.trim();
-  const mechanism = $("mechanism").value.trim();
-  if (indication && mechanism && !$("evaluate").disabled) evaluate(indication, mechanism);
+  if ($("evaluate").disabled) return;
+  if (searchMode === "detailed") {
+    evaluate({ indication: $("indication").value.trim(), mechanism: $("mechanism").value.trim() });
+  } else {
+    evaluate({ query: $("query").value.trim() });
+  }
 };
 $("indication").oninput = updateEvaluateEnabled;
 $("mechanism").oninput = updateEvaluateEnabled;
+$("query").oninput = updateEvaluateEnabled;
 $("toggle-sidebar").onclick = () => { $("sidebar").classList.add("collapsed"); $("open-sidebar").classList.remove("hidden"); };
 $("open-sidebar").onclick = () => { $("sidebar").classList.remove("collapsed"); $("open-sidebar").classList.add("hidden"); };
 $("modal-close").onclick = closeModal;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+
+/* Assistant panel — input + send shell for the helper model.
+   The model is not wired up yet: a sent message is logged with a note saying so,
+   so the control is never silently dead. Wiring it means replacing the note
+   below with a call to an /api/assistant endpoint. */
+function appendAssistantMsg(who, text, cls) {
+  const log = $("assistant-log");
+  log.classList.remove("hidden");
+  const div = document.createElement("div");
+  div.className = cls ? `assistant-msg ${cls}` : "assistant-msg";
+  div.innerHTML = `<span class="who">${esc(who)}</span>${esc(text)}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function updateAssistantSendEnabled() {
+  $("assistant-send").disabled = !$("assistant-input").value.trim();
+}
+
+$("assistant-form").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("assistant-input").value.trim();
+  if (!text) return;
+  appendAssistantMsg("You", text);
+  $("assistant-input").value = "";
+  updateAssistantSendEnabled();
+  appendAssistantMsg("Assistant", "Not connected to the model yet — this window only takes the message for now.", "note");
+};
+$("assistant-input").oninput = updateAssistantSendEnabled;
+
+setSearchMode("detailed");
 renderHistory();
