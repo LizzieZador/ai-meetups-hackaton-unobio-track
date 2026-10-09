@@ -14,8 +14,8 @@ SOURCE_TITLES = {
     "clinicaltrials": "ClinicalTrials.gov",
     "aact": "AACT (Aggregate Analysis of ClinicalTrials.gov)",
     "commercial": "Epidemiology / Market Data",
-    "regulatory": "openFDA Drugs@FDA (regulatory designations)",
-    "market_news": "SEC EDGAR (company disclosures & press releases)",
+    "regulatory": "openFDA Drugs@FDA (approval records and recorded designations)",
+    "market_news": "SEC EDGAR (company filing metadata and exhibits)",
 }
 SOURCE_ORDER = [
     "pubmed", "opentargets", "clinicaltrials", "aact", "commercial", "regulatory", "market_news",

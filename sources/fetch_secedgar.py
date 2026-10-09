@@ -79,10 +79,9 @@ def _search_cached(term: str, limit: int, forms: str) -> list[dict]:
 def _fetch(params: dict) -> Optional[list[dict]]:
     try:
         resp = requests.get(SEARCH_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=15)
-        if resp.status_code != 200:
-            return None
+        resp.raise_for_status()
         return resp.json().get("hits", {}).get("hits", [])
-    except requests.RequestException:
+    except (requests.RequestException, ValueError):
         return None
 
 
@@ -95,11 +94,13 @@ def _build_record(term: str, hit: dict, today: str) -> Optional[dict]:
 
     ciks = src.get("ciks") or []
     cik = ciks[0].lstrip("0") if ciks else ""
+    if not cik:
+        # A generic company-search URL would not substantiate this filing.
+        return None
     accession_nodash = accession.replace("-", "")
     url = (
         f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{filename}"
-        if cik
-        else f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+        if cik else ""
     )
 
     company = (src.get("display_names") or ["Unknown filer"])[0]

@@ -73,7 +73,10 @@ unknowns, diligence questions) і ніколи не перетворює `infere
 │   ├── fetch_pubmed.py
 │   ├── fetch_opentargets.py
 │   ├── fetch_clinicaltrials.py
-│   └── fetch_aact.py           # жива Postgres БД, fallback — flat-файли з data/aact/
+│   ├── fetch_aact.py           # зовнішня Postgres БД або flat-файли
+│   ├── fetch_regulatory.py     # openFDA Drugs@FDA point queries
+│   ├── fetch_secedgar.py       # SEC EDGAR filing search
+│   └── fetch_patentsview.py    # USPTO ODP bulk downloads; не інтегровано в pipeline
 ├── agents/
 │   ├── scientific_agent.py
 │   ├── clinical_agent.py
@@ -109,14 +112,39 @@ unknowns, diligence questions) і ніколи не перетворює `infere
 
 ## Reproducibility (Required Deliverable)
 
-- **Source attribution** — кожен evidence claim має точне джерело й URL.
-- **Model/API usage** — `llm.py`, модель `claude-sonnet-5` через `anthropic` SDK.
-- **Approximate cost per run** — `llm.py` рахує токени з кожної відповіді API,
-  `pipeline.py` виводить orientировну вартість (ціни Anthropic: $2/$10 за 1M
-  input/output токенів) унизу кожного звіту.
+- **Source attribution** — кожен evidence claim має точне джерело й URL; ручні
+  market-data рядки лишаються unverified, доки аналітик не додасть точний
+  `Evidence_Snippet` / `Pricing_Evidence_Snippet` і не поставить відповідний
+  `Data_Verified` / `Pricing_Verified` у `yes`.
+- **Model/API usage** — `llm.py` підтримує командний OpenAI-сумісний gateway,
+  Gemini та Claude з fallback між налаштованими провайдерами.
+- **Approximate cost per run** — токени рахуються окремо для кожного виклику та
+  оцінюються за ставкою відповідного провайдера; тариф gateway у коді поки
+  позначений нульовою заглушкою, тому його оцінка вартості ненадійна.
 - **Logs / traces** — кожен запуск `run_pipeline()` пише JSON-трейс у
   `data/reports/run_<timestamp>_<pair>.json`: indication, mechanism, сирі
   джерела, усі claims, вартість — повна відтворюваність одного запуску.
+
+## Підключені джерела й обмеження
+
+Вбудованої бази даних у проєкті немає: джерела викликаються через API, результати
+тимчасово зберігаються у JSON-кеші, а AACT може додатково читати зовнішній
+PostgreSQL або flat-файли. У `pipeline.py` фактично підключені PubMed, Open
+Targets, ClinicalTrials.gov, AACT, CSV market data, openFDA Drugs@FDA та SEC
+EDGAR.
+
+- **openFDA Drugs@FDA** шукає вже схвалені заявки для препаратів-аналогів з Open
+  Targets. Повертає approval actions і лише ті designations, які є в метаданих
+  submission (наприклад, Orphan та Priority Review). Це не повний реєстр
+  Fast Track / Breakthrough для досліджуваного активу і не доказ, що нашій
+  програмі надано таке призначення.
+- **SEC EDGAR** повертає знайдені 8-K filings і метадані/посилання на exhibits.
+  Це сигнал компанійних розкриттів, але код не витягує і не аналізує повний
+  текст, не визначає sentiment і не покриває earnings-call/KOL коментарі.
+- **PatentsView** у `sources/fetch_patentsview.py` — окремий bulk-download
+  інструмент для USPTO Open Data Portal (ODP), а не live пошук патентів. Він
+  потребує `USPTO_ODP_API_KEY`, не викликається з `pipeline.py`, тому картка
+  Patent & IP зараз свідомо не підключена. Не позначайте її як перевірену.
 
 ## Запуск
 

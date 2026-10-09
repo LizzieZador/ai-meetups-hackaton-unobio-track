@@ -151,15 +151,20 @@ def get_epidemiology(indication: str, cutoff_date: Optional[str] = None) -> Opti
             prev = row.get("Prevalence_US_EU", "N/A")
             inc = row.get("Incidence_Annual_US_EU", "N/A")
 
-            # Must have BOTH primary URL and publication year to count as verified evidence
-            is_evidence = bool(_is_valid_url(primary_url) and year_val is not None)
+            # A URL and year alone do not prove that the linked page supports
+            # these exact figures (several legacy rows linked a broad landing
+            # page or a US-only source while labeling the value US+EU).
+            evidence_snippet = (row.get("Evidence_Snippet") or "").strip()
+            explicitly_verified = (row.get("Data_Verified") or "").strip().lower() in {"yes", "true", "1"}
+            is_evidence = bool(
+                explicitly_verified and evidence_snippet
+                and _is_valid_url(primary_url) and year_val is not None
+            )
 
             if is_evidence:
                 source_label = f"Manual dataset: {source_name}"
                 raw_snippet = (
-                    f"{raw_ind}: prevalence {prev} patients, "
-                    f"annual incidence {inc} patients/year, "
-                    f"publication year {year_val}, region {region}."
+                    evidence_snippet
                 )
                 url = primary_url
             else:
@@ -167,7 +172,7 @@ def get_epidemiology(indication: str, cutoff_date: Optional[str] = None) -> Opti
                 raw_snippet = (
                     f"Unverified epidemiology for {raw_ind}: prevalence {prev}, "
                     f"annual incidence {inc}, region {region} "
-                    f"(lacks verified primary source URL and publication year)."
+                    f"(figure-to-source support has not been verified; URL/year alone are insufficient)."
                 )
                 url = primary_url if _is_valid_url(primary_url) else ""
 
@@ -252,14 +257,17 @@ def get_pricing_analogues(indication: str, cutoff_date: Optional[str] = None) ->
                 source_name = row.get("Pricing_Source") or "Pharmaceutical Pricing Benchmark"
                 region = row.get("Region") or "US"
 
-                is_evidence = bool(_is_valid_url(pricing_url) and year_val is not None)
+                evidence_snippet = (row.get("Pricing_Evidence_Snippet") or "").strip()
+                explicitly_verified = (row.get("Pricing_Verified") or "").strip().lower() in {"yes", "true", "1"}
+                is_evidence = bool(
+                    explicitly_verified and evidence_snippet
+                    and _is_valid_url(pricing_url) and year_val is not None
+                )
 
                 if is_evidence:
                     source_label = f"Manual dataset: {source_name}"
                     raw_snippet = (
-                        f"Pricing analogue for {raw_ind} ({drug_name}): "
-                        f"annual treatment cost {cost_raw} USD, "
-                        f"year {year_val}, region {region}."
+                        evidence_snippet
                     )
                     url = pricing_url
                 else:
@@ -267,7 +275,7 @@ def get_pricing_analogues(indication: str, cutoff_date: Optional[str] = None) ->
                     raw_snippet = (
                         f"Unverified pricing analogue for {raw_ind} ({drug_name}): "
                         f"annual treatment cost {cost_raw} USD "
-                        f"(lacks verified primary source URL and publication year)."
+                        f"(price-to-source support has not been verified; URL/year alone are insufficient)."
                     )
                     url = pricing_url if _is_valid_url(pricing_url) else ""
 

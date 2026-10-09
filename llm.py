@@ -71,18 +71,22 @@ def reset_usage_log() -> None:
 
 
 def get_usage_summary() -> dict:
-    """Aggregate token usage + approximate USD cost for every call since the last reset."""
+    """Aggregate token usage and price each provider's calls at its own rate."""
     input_tokens = sum(u.get("input_tokens", 0) for u in _usage_log)
     output_tokens = sum(u.get("output_tokens", 0) for u in _usage_log)
-    model = _usage_log[0]["model"] if _usage_log else "unknown"
-
-    if "gemini" in model.lower():
-        price_in, price_out = PRICE_GEMINI_IN, PRICE_GEMINI_OUT
-    elif model == MODEL_OPENAI:
-        price_in, price_out = PRICE_OPENAI_IN, PRICE_OPENAI_OUT
-    else:
-        price_in, price_out = PRICE_ANTHROPIC_IN, PRICE_ANTHROPIC_OUT
-    cost = (input_tokens / 1_000_000) * price_in + (output_tokens / 1_000_000) * price_out
+    models = list(dict.fromkeys(u["model"] for u in _usage_log))
+    model = models[0] if len(models) == 1 else ("mixed: " + ", ".join(models) if models else "unknown")
+    cost = 0.0
+    for usage in _usage_log:
+        used_model = usage["model"]
+        if "gemini" in used_model.lower():
+            price_in, price_out = PRICE_GEMINI_IN, PRICE_GEMINI_OUT
+        elif used_model == MODEL_OPENAI:
+            price_in, price_out = PRICE_OPENAI_IN, PRICE_OPENAI_OUT
+        else:
+            price_in, price_out = PRICE_ANTHROPIC_IN, PRICE_ANTHROPIC_OUT
+        cost += (usage.get("input_tokens", 0) / 1_000_000) * price_in
+        cost += (usage.get("output_tokens", 0) / 1_000_000) * price_out
 
     return {
         "model": model,

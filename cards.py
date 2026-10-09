@@ -31,8 +31,8 @@ CARDS: list[dict] = [
     },
     {
         "id": "market_sentiment",
-        "title": "Market sentiment & expert intelligence",
-        "subtitle": "Earnings calls, press releases, KOL and analyst transcripts",
+        "title": "Company disclosures (SEC EDGAR)",
+        "subtitle": "8-K filing metadata and exhibits; not earnings-call transcripts or sentiment analysis",
         "claim_sections": [],
         "raw_sources": ["market_news"],
     },
@@ -68,7 +68,7 @@ CARDS: list[dict] = [
     {
         "id": "patent_ip",
         "title": "Patent & IP review",
-        "subtitle": "Patent databases, litigation, freedom-to-operate analysis",
+        "subtitle": "Not connected yet: needs searchable patent records and claim-level review",
         "claim_sections": [],
         "raw_sources": [],
     },

@@ -30,8 +30,8 @@ CACHE_DIR.mkdir(exist_ok=True)
 def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 1) -> list[dict]:
     """Look up Drugs@FDA application records for each drug name.
 
-    Extracts regulatory designations (Orphan, Fast Track, Breakthrough Therapy,
-    Accelerated Approval, Priority Review) and the earliest recorded approval
+    Extracts designations explicitly present in Drugs@FDA submission metadata
+    (commonly orphan-drug property and priority review) and the earliest recorded approval
     action per application — raw, code-verifiable facts, not an LLM opinion.
     Any name that fails to resolve (typo, never-approved drug, API hiccup) is
     silently skipped; the caller gets whatever the rest resolved to.
@@ -68,10 +68,15 @@ def _query_cached(name_lower: str, limit: int) -> Optional[list[dict]]:
 
     try:
         resp = requests.get(API_URL, params=params, timeout=15)
-        if resp.status_code != 200:
-            return None
+        if resp.status_code == 404:
+            # A well-formed query with no matching approved application.
+            cache_path.write_text("[]", encoding="utf-8")
+            return []
+        resp.raise_for_status()
         data = resp.json().get("results", [])
-    except requests.RequestException:
+    except (requests.RequestException, ValueError):
+        # Do not cache outages, rate limits, or malformed responses as an
+        # authoritative empty result; the next run should retry the API.
         return None
 
     cache_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
