@@ -7,8 +7,9 @@ Every statement the system makes is one of these objects, never a line of free t
 task brief ("Moving Beyond the Molecule") — the report is assembled by grouping
 claims under these exact headings, not by an LLM freely writing a report.
 """
+import re
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 ClaimType = Literal["evidence", "inference"]
 Confidence = Literal["low", "medium", "high"]
@@ -59,6 +60,11 @@ class Claim:
     # optional metadata fields
     evidence_id: Optional[str] = None
     based_on: Optional[list[str]] = None
+    # optional structured risk fields (primarily for section == "key_risks")
+    probability: Optional[float] = None
+    impact_musd: Optional[float] = None
+    impact_pct: Optional[float] = None
+    risk_score: Optional[float] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.section, str):
@@ -72,6 +78,12 @@ class Claim:
             raise ValueError(f"evidence claim without a string source: {self.claim!r}")
         if self.type == "inference" and not (self.reasoning and self.confidence):
             raise ValueError(f"inference claim without reasoning/confidence: {self.claim!r}")
+        if self.probability is not None and not (0.0 <= self.probability <= 1.0):
+            raise ValueError(f"probability out of bounds [0, 1]: {self.probability} for claim: {self.claim!r}")
+        if self.impact_pct is not None and not (0.0 <= self.impact_pct <= 1.0):
+            raise ValueError(f"impact_pct out of bounds [0, 1]: {self.impact_pct} for claim: {self.claim!r}")
+        if self.impact_musd is not None and self.impact_musd < 0.0:
+            raise ValueError(f"impact_musd cannot be negative: {self.impact_musd} for claim: {self.claim!r}")
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -170,6 +182,82 @@ def get_dropped_claims_log() -> list[dict]:
     return list(_dropped_claims_log)
 
 
+def _normalize_fraction(val: Any) -> Optional[float]:
+    """Parse a probability or percentage into a float in [0.0, 1.0]."""
+    if val is None or val == "":
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        if 0.0 <= f <= 1.0:
+            return round(f, 4)
+        if 1.0 < f <= 100.0:
+            return round(f / 100.0, 4)
+        return None
+    if isinstance(val, str):
+        cleaned = val.strip().rstrip("%").strip()
+        try:
+            f = float(cleaned)
+            if 0.0 <= f <= 1.0:
+                return round(f, 4)
+            if 1.0 < f <= 100.0:
+                return round(f / 100.0, 4)
+        except ValueError:
+            pass
+    return None
+
+
+def _normalize_impact_musd(val: Any) -> Optional[float]:
+    """Parse impact in millions of dollars into a non-negative float."""
+    if val is None or val == "":
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        return round(f, 2) if f >= 0.0 else None
+    if isinstance(val, str):
+        cleaned = re.sub(r"[\$,MmBb]", "", val).strip()
+        try:
+            f = float(cleaned)
+            return round(f, 2) if f >= 0.0 else None
+        except ValueError:
+            pass
+    return None
+
+
+def _extract_risk_metrics_from_text(text: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Fallback extraction of probability, impact_pct, and impact_musd from free text."""
+    prob: Optional[float] = None
+    imp_pct: Optional[float] = None
+    imp_musd: Optional[float] = None
+
+    if not text:
+        return None, None, None
+
+    # Probability match e.g. "60% probability", "probability: 60%", "chance: 40%"
+    m_prob = re.search(r"(?:probability|prob|likelihood|chance)[:\s]+(\d+(?:\.\d+)?)\s*%", text, re.I)
+    if not m_prob:
+        m_prob = re.search(r"(\d+(?:\.\d+)?)\s*%\s*(?:probability|prob|likelihood|chance)", text, re.I)
+    if not m_prob:
+        m_prob = re.search(r"(?:probability|prob|likelihood)[:\s]+(0\.\d+)", text, re.I)
+    if m_prob:
+        prob = _normalize_fraction(m_prob.group(1))
+
+    # Impact MUSD match e.g. "$150M impact", "impact: $120M", "-$80M"
+    m_musd = re.search(r"(?:impact|loss|reduction|rnpv\s+hit)[:\s]+(?:\$|~)?(\d+(?:\.\d+)?)\s*(?:m|million|musd)\b", text, re.I)
+    if not m_musd:
+        m_musd = re.search(r"(?:\$|~)?(\d+(?:\.\d+)?)\s*(?:m|million|musd)\s*(?:impact|loss|reduction|hit)\b", text, re.I)
+    if m_musd:
+        imp_musd = _normalize_impact_musd(m_musd.group(1))
+
+    # Impact percentage match e.g. "80% impact", "50% loss of rnpv"
+    m_pct = re.search(r"(?:impact|loss|reduction|rnpv\s+hit)[:\s]+(\d+(?:\.\d+)?)\s*%", text, re.I)
+    if not m_pct:
+        m_pct = re.search(r"(\d+(?:\.\d+)?)\s*%\s*(?:impact|loss|reduction|of\s+rnpv|hit)", text, re.I)
+    if m_pct:
+        imp_pct = _normalize_fraction(m_pct.group(1))
+
+    return prob, imp_pct, imp_musd
+
+
 def parse_claims(
     raw: list[dict],
     valid_sources: Optional[set] = None,
@@ -180,7 +268,7 @@ def parse_claims(
     Tolerates extra keys from the LLM or upstream collectors by filtering
     to Claim dataclass fields. Normalizes casing and aliases, rescues
     explanation/rationale into reasoning, defaults missing inference confidence
-    to 'medium', and logs any dropped claims with their reason.
+    to 'medium', parses structured risk metrics, and logs any dropped claims.
     """
     claims = []
     known_fields = set(Claim.__dataclass_fields__.keys())
@@ -230,6 +318,41 @@ def parse_claims(
 
         if reasoning is not None:
             item_copy["reasoning"] = str(reasoning).strip()
+
+        # Parse structured risk metrics (probability, impact, risk_score)
+        prob = _normalize_fraction(item_copy.get("probability"))
+        imp_pct = _normalize_fraction(item_copy.get("impact_pct"))
+        imp_musd = _normalize_impact_musd(item_copy.get("impact_musd") or item_copy.get("impact"))
+
+        if normalized_sec == "key_risks":
+            combined_text = f"{item_copy.get('claim', '')} {item_copy.get('reasoning', '')}"
+            t_prob, t_imp_pct, t_imp_musd = _extract_risk_metrics_from_text(combined_text)
+            if prob is None:
+                prob = t_prob
+            if imp_pct is None:
+                imp_pct = t_imp_pct
+            if imp_musd is None:
+                imp_musd = t_imp_musd
+
+        if prob is not None:
+            item_copy["probability"] = prob
+        if imp_pct is not None:
+            item_copy["impact_pct"] = imp_pct
+        if imp_musd is not None:
+            item_copy["impact_musd"] = imp_musd
+
+        # Compute or parse risk_score
+        risk_score_raw = item_copy.get("risk_score")
+        if risk_score_raw is not None:
+            try:
+                item_copy["risk_score"] = round(float(risk_score_raw), 2)
+            except (ValueError, TypeError):
+                pass
+        elif prob is not None:
+            if imp_musd is not None:
+                item_copy["risk_score"] = round(prob * imp_musd, 2)
+            elif imp_pct is not None:
+                item_copy["risk_score"] = round(prob * imp_pct * 100.0, 2)
 
         # Filter out extra unexpected keys to tolerate model extensions
         filtered_item = {k: v for k, v in item_copy.items() if k in known_fields}

@@ -34,7 +34,11 @@ from sources.fetch_secedgar import fetch_press_releases
 REPORTS_DIR = Path(__file__).resolve().parent / "data" / "reports"
 
 
-def collect_sources(indication: str, mechanism: str) -> dict:
+def collect_sources(
+    indication: str,
+    mechanism: str,
+    cutoff_date: Optional[str] = None,
+) -> dict:
     """Fetch raw snippets from all five sources.
 
     Uses the richer collectors (8-angle PubMed search + target context for
@@ -48,8 +52,8 @@ def collect_sources(indication: str, mechanism: str) -> dict:
     Any source that fails (or returns None) becomes an empty list here — the
     pipeline keeps going with whatever evidence is actually available.
     """
-    sci_bundle = collect_scientific_sources(indication, mechanism) or {}
-    comm_bundle = collect_commercial_sources(indication, mechanism) or {}
+    sci_bundle = collect_scientific_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date) or {}
+    comm_bundle = collect_commercial_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date) or {}
 
     # sci_bundle's two lists overlap by design (the "clinical"/"opentargets"
     # query groups feed both scientific_thesis and human_translation) — dedupe
@@ -91,12 +95,12 @@ def collect_sources(indication: str, mechanism: str) -> dict:
     # analog drug list Open Targets already gave us (extract_analogs() reads
     # the "known_drugs" field attached to opentargets_records above). No
     # analogs found means nothing to query yet, not a fetch failure.
-    analog_names = [d["name"] for d in extract_analogs({"opentargets": opentargets_records}) if d.get("name")]
+    analog_names = [d["name"] for d in extract_analogs(sources={"opentargets": opentargets_records}) if d.get("name")]
 
     return {
         "pubmed": pubmed_records,
         "opentargets": opentargets_records,
-        "clinicaltrials": fetch_clinicaltrials(indication, mechanism) or [],
+        "clinicaltrials": fetch_clinicaltrials(condition=indication, intervention=mechanism) or [],
         "aact": aact_records,
         "commercial": comm_bundle.get("commercial", []),
         "regulatory": fetch_regulatory_signals(analog_names[:5]) if analog_names else [],
@@ -105,7 +109,10 @@ def collect_sources(indication: str, mechanism: str) -> dict:
 
 
 def run_pipeline(
-    indication: str, mechanism: str, extra_context: str = ""
+    indication: str,
+    mechanism: str,
+    extra_context: str = "",
+    cutoff_date: Optional[str] = None,
 ) -> tuple[list[Claim], dict, dict]:
     """Run the full committee and return (final_claims, cost_summary, sources).
 
@@ -136,27 +143,46 @@ def run_pipeline(
 
     reset_usage_log()
     reset_dropped_claims_log()
-    sources = collect_sources(indication, mechanism)
-    valid_sources = collect_valid_sources(sources)
+    sources = collect_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
+    valid_sources = collect_valid_sources(sources=sources)
 
     # The raw `sources` above must reach the caller even if the LLM is totally
     # down (quota exhausted, provider outage, no key) — the site's primary
     # output is the connected-database data, not the LLM. Each agent call is
     # therefore isolated: a failure there costs that agent's claims, never the
     # whole response.
+    # Pass all agent arguments by explicit keyword arguments to prevent positional inversion
     scientific_claims = _safe_agent_call(
-        "scientific_agent", scientific_agent,
-        indication, mechanism, sources["pubmed"] + sources["opentargets"], extra_context, valid_sources,
+        "scientific_agent",
+        scientific_agent,
+        indication=indication,
+        mechanism=mechanism,
+        sources=sources["pubmed"] + sources["opentargets"],
+        extra_context=extra_context,
+        valid_sources=valid_sources,
+        cutoff_date=cutoff_date,
     )
     clinical_claims = _safe_agent_call(
-        "clinical_agent", clinical_agent,
-        indication, mechanism, sources["clinicaltrials"] + sources["aact"], scientific_claims,
-        extra_context, valid_sources,
+        "clinical_agent",
+        clinical_agent,
+        indication=indication,
+        mechanism=mechanism,
+        sources=sources["clinicaltrials"] + sources["aact"],
+        scientific_claims=scientific_claims,
+        extra_context=extra_context,
+        valid_sources=valid_sources,
+        cutoff_date=cutoff_date,
     )
     commercial_claims = _safe_agent_call(
-        "commercial_agent", commercial_agent,
-        indication, mechanism, sources["aact"] + sources["opentargets"] + sources["commercial"],
-        clinical_claims, extra_context, valid_sources,
+        "commercial_agent",
+        commercial_agent,
+        indication=indication,
+        mechanism=mechanism,
+        sources=sources["aact"] + sources["opentargets"] + sources["commercial"],
+        clinical_claims=clinical_claims,
+        extra_context=extra_context,
+        valid_sources=valid_sources,
+        cutoff_date=cutoff_date,
     )
 
     financial_result: Optional[FinancialResult] = None
@@ -173,7 +199,11 @@ def run_pipeline(
 
     try:
         final_claims = chair_agent(
-            indication, mechanism, scientific_claims, clinical_claims, commercial_claims,
+            indication=indication,
+            mechanism=mechanism,
+            scientific_claims=scientific_claims,
+            clinical_claims=clinical_claims,
+            commercial_claims=commercial_claims,
             extra_context=extra_context,
             financial_result=financial_result,
             sources=sources,
@@ -184,7 +214,16 @@ def run_pipeline(
         final_claims = scientific_claims + clinical_claims + commercial_claims
 
     cost_summary = get_usage_summary()
-    _write_trace(indication, mechanism, extra_context, sources, final_claims, cost_summary, financial_result)
+    _write_trace(
+        indication=indication,
+        mechanism=mechanism,
+        extra_context=extra_context,
+        sources=sources,
+        claims=final_claims,
+        cost_summary=cost_summary,
+        financial_result=financial_result,
+        cutoff_date=cutoff_date,
+    )
     return final_claims, cost_summary, sources
 
 
@@ -199,16 +238,31 @@ def _safe_agent_call(name: str, fn, *args, **kwargs) -> list[Claim]:
         return []
 
 
-def run_pipeline_markdown(indication: str, mechanism: str, extra_context: str = "") -> str:
+def run_pipeline_markdown(
+    indication: str,
+    mechanism: str,
+    extra_context: str = "",
+    cutoff_date: Optional[str] = None,
+) -> str:
     """Convenience wrapper for callers (CLI) that just want the rendered report."""
-    claims, cost_summary, sources = run_pipeline(indication, mechanism, extra_context)
+    claims, cost_summary, sources = run_pipeline(
+        indication=indication,
+        mechanism=mechanism,
+        extra_context=extra_context,
+        cutoff_date=cutoff_date,
+    )
 
     cost_line = (
         f"Pipeline cost for this run: ~${cost_summary['approx_cost_usd']} "
         f"({cost_summary['calls']} calls, {cost_summary['model']}, "
         f"{cost_summary['input_tokens']} in / {cost_summary['output_tokens']} out tokens)"
     )
-    return render_report(indication, mechanism, claims, cost_summary=cost_line)
+    return render_report(
+        indication=indication,
+        mechanism=mechanism,
+        claims=claims,
+        cost_summary=cost_line,
+    )
 
 
 def _write_trace(
@@ -219,6 +273,7 @@ def _write_trace(
     claims: list[Claim],
     cost_summary: dict,
     financial_result: Optional[FinancialResult] = None,
+    cutoff_date: Optional[str] = None,
 ) -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -228,6 +283,7 @@ def _write_trace(
         "indication": indication,
         "mechanism": mechanism,
         "extra_context": extra_context,
+        "cutoff_date": cutoff_date,
         "timestamp": timestamp,
         "sources": sources,
         "claims": [c.to_dict() for c in claims],

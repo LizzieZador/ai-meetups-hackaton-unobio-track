@@ -230,13 +230,8 @@ def scientific_agent(
     Returns:
         Combined list of validated Claim objects for scientific_thesis and human_translation_thesis.
     """
-    # Guard against positional argument inversion (e.g. if caller passes valid_sources as 5th arg)
-    if isinstance(cutoff_date, (set, frozenset)) and valid_sources is None:
-        valid_sources = cutoff_date
-        cutoff_date = None
-
     if sources is None:
-        bundle = collect_scientific_sources(indication, mechanism, cutoff_date=cutoff_date)
+        bundle = collect_scientific_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
         sci_sources = bundle["scientific_thesis"]
         trans_sources = bundle["human_translation"]
         notes = bundle["notes"]
@@ -314,7 +309,7 @@ if __name__ == "__main__":
         print(f"Cutoff date applied: {args.cutoff_date}")
 
     reset_usage_log()
-    claims = scientific_agent(args.indication, args.mechanism, cutoff_date=args.cutoff_date)
+    claims = scientific_agent(indication=args.indication, mechanism=args.mechanism, cutoff_date=args.cutoff_date)
 
     print(f"\n=== GENERATED CLAIMS ({len(claims)}) ===")
     by_section: dict[str, list[Claim]] = {}

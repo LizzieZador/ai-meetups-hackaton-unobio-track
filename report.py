@@ -124,8 +124,18 @@ def render_report(
     risks = by_section.get("key_risks", [])
     if risks:
         for r in risks[:3]:
+            metrics = []
+            if r.probability is not None:
+                metrics.append(f"Prob: {r.probability * 100:.0f}%")
+            if r.impact_pct is not None:
+                metrics.append(f"Impact: -{r.impact_pct * 100:.0f}% rNPV")
+            elif r.impact_musd is not None:
+                metrics.append(f"Impact: -${r.impact_musd:.1f}M")
+            if r.risk_score is not None:
+                metrics.append(f"Score: {r.risk_score:.1f}")
+            metric_tag = f" `[{', '.join(metrics)}]`" if metrics else ""
             impact_text = f" — _{r.reasoning}_" if r.reasoning else ""
-            lines.append(f"- **{r.claim}** `[INFERENCE]`{impact_text}")
+            lines.append(f"- **{r.claim}** `[INFERENCE]`{metric_tag}{impact_text}")
     else:
         lines.append("_No critical failure modes reported._")
     lines.append("")

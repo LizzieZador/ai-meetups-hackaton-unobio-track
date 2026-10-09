@@ -69,6 +69,7 @@ def clinical_agent(
     scientific_claims: list[Claim],
     extra_context: str = "",
     valid_sources: Optional[set] = None,
+    cutoff_date: Optional[str] = None,
     max_claims: int = 12,
 ) -> list[Claim]:
     """Run the clinical development analyst agent with code-enforced verification.
@@ -80,6 +81,7 @@ def clinical_agent(
         scientific_claims: Upstream claims from the scientific agent.
         extra_context: Optional user-provided context (modality, biomarkers, etc.).
         valid_sources: Optional set of allowed source names (for pipeline compatibility).
+        cutoff_date: Optional publication/registry cutoff date (YYYY-MM-DD).
         max_claims: Upper bound on accepted claims returned.
 
     Returns:

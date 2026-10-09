@@ -312,7 +312,7 @@ def commercial_agent(
     sources: Optional[list[dict]] = None,
     clinical_claims: Optional[list[Claim]] = None,
     extra_context: str = "",
-    valid_sources: Any = None,
+    valid_sources: Optional[set] = None,
     cutoff_date: Optional[str] = None,
     max_claims: int = 12,
 ) -> list[Claim]:
@@ -325,20 +325,15 @@ def commercial_agent(
                  If None, calls collect_commercial_sources().
         clinical_claims: Upstream claims from the clinical development analyst.
         extra_context: Optional context string (modality, stage, biomarkers).
-        valid_sources: Optional set of allowed source names, or positional cutoff_date string.
+        valid_sources: Optional set of allowed source names for grounding validation.
         cutoff_date: Optional historical cutoff date (YYYY-MM-DD).
         max_claims: Maximum accepted claims per section.
 
     Returns:
         List of validated Claim objects for 'competitive_landscape' and 'commercial_opportunity'.
     """
-    # Guard against positional argument swapping between different pipeline callers
-    if isinstance(valid_sources, str) and cutoff_date is None:
-        cutoff_date = valid_sources
-        valid_sources = None
-
     if sources is None:
-        collected = collect_commercial_sources(indication, mechanism, cutoff_date=cutoff_date)
+        collected = collect_commercial_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
         all_sources = collected.get("competitive", []) + collected.get("commercial", [])
         if valid_sources is None:
             valid_sources = {s["source"] for s in all_sources if isinstance(s, dict) and s.get("source")}

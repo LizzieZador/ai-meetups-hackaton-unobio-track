@@ -43,7 +43,16 @@ REQUIRED_CHAIR_SECTIONS = [
 VALID_VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
 
 SECTION_PROMPT_RULES = {
-    "key_risks": '- "key_risks": Top 3-5 risks ranked by (probability x impact on rNPV). Reasoning MUST state explicit estimated probability (%) and impact on rNPV.',
+    "key_risks": """- "key_risks": Top 3-5 risks ranked strictly by expected loss = (probability x impact on rNPV).
+      Every key_risk claim object MUST provide:
+        "claim": "Direct risk name/failure mode (e.g. 'Phase 2 failure due to lack of biomarker patient enrichment')",
+        "probability": <float between 0.0 and 1.0 representing likelihood, e.g. 0.45 for 45%>,
+        "impact_pct": <float between 0.0 and 1.0 representing fractional rNPV destruction, e.g. 0.60 for 60%>,
+        "impact_musd": <optional float representing dollar loss in millions, or null>,
+        "reasoning": "Explicit quantitative failure mechanism, probability assumptions, and expected valuation impact.",
+        "confidence": "high"|"medium"|"low",
+        "section": "key_risks",
+        "type": "inference" """,
     "capital_required": '- "capital_required": Explain capital required to reach the next major milestone and total capital to commercial launch, citing the exact deterministic numbers provided in the financial model brief (Low/Base/High, timeline in months/years). Detail value inflection points (Phase 2 PoC) and out-licensing/M&A deal benchmarks.',
     "critical_unknowns": '- "critical_unknowns": Top 2-4 critical unanswerable unknowns or missing links that cannot be resolved from public data alone (e.g. human tissue target engagement, long-term toxicity kinetics, companion biomarker validation). Reasoning must explain why public data cannot answer it and what proprietary experiments or audits would resolve it.',
     "diligence_questions": """- "diligence_questions": YOU MUST PRODUCE BETWEEN 5 AND 10 INDIVIDUAL, DISTINCT CLAIM OBJECTS (min 5, max 10).
@@ -78,7 +87,16 @@ Produce a JSON array of NEW claim objects only (do not repeat input claims).
 CRITICAL RULES:
 1. Every new claim MUST have "type": "inference" (these are committee judgments).
 2. "section" MUST be one of exactly these five values:
-   - "key_risks": Top 3-5 risks ranked by (probability x impact on rNPV). Reasoning MUST state explicit estimated probability (%) and impact on rNPV.
+   - "key_risks": Top 3-5 risks ranked strictly by expected loss = (probability x impact on rNPV).
+     Every key_risk claim object MUST provide structured numerical fields:
+       "claim": "Direct risk name and failure mode",
+       "probability": <float between 0.0 and 1.0, e.g. 0.40 for 40% likelihood>,
+       "impact_pct": <float between 0.0 and 1.0, e.g. 0.70 for 70% rNPV loss>,
+       "impact_musd": <optional float valuation loss in $M, or null>,
+       "reasoning": "Explicit probability rationale and impact on rNPV valuation.",
+       "confidence": "high"|"medium"|"low",
+       "section": "key_risks",
+       "type": "inference"
    - "capital_required": Detail capital required to reach the next major milestone and commercial launch, citing the exact deterministic numbers from the financial model brief (Low/Base/High, timeline). Detail value inflection points (Phase 2 PoC) and licensing/M&A exit terms.
    - "critical_unknowns": Top 2-4 critical unanswerable unknowns or missing links that cannot be resolved from public data alone (e.g. human tissue target engagement, long-term toxicity kinetics, companion biomarker validation). Reasoning must explain why public data cannot answer it and what proprietary experiments or audits would resolve it.
    - "diligence_questions": YOU MUST PRODUCE BETWEEN 5 AND 10 INDIVIDUAL, DISTINCT CLAIM OBJECTS (min 5, max 10).
@@ -110,7 +128,7 @@ CRITICAL RULES:
 
 3. CONTRADICTIONS & RISK OVERRIDE:
    - Actively synthesize contradictions between analysts.
-   - If the top key_risk has high probability and high impact (or if contradictory/toxic evidence is provided in context), the verdict CANNOT be "Invest". It must be "Conditional" or "Do Not Invest".
+   - If any key_risk has high probability and high impact (or if contradictory/toxic evidence is provided in context), the verdict CANNOT be "Invest". It must be "Conditional" or "Do Not Invest".
 4. Never produce type "evidence" claims. Return ONLY the JSON array, nothing else.
 """
 
@@ -274,14 +292,52 @@ CRITICAL RULES:
         )
         sanitized_synthesis.append(verdict_claim_obj)
 
-    # Programmatic rule enforcement: Deterministic Financials, High Risk Override, and 5-10 Diligence Questions
+    # Programmatic rule enforcement: Deterministic Financials, Structured Risk Ranking & Override, and 5-10 Diligence Questions
+    base_rnpv = financial_result.rnpv_millions.get("base") if financial_result else None
+    _rank_and_score_key_risks(sanitized_synthesis, base_rnpv=base_rnpv)
     if financial_result is not None:
         _enforce_deterministic_financials(sanitized_synthesis, financial_result)
-    _enforce_risk_override_guardrail(all_claims, sanitized_synthesis)
+    _enforce_risk_override_guardrail(all_claims, sanitized_synthesis, base_rnpv=base_rnpv)
     _enforce_diligence_questions_guardrail(all_claims, sanitized_synthesis, indication, mechanism)
 
     # Return combined list of all claims
     return all_claims + sanitized_synthesis
+
+
+def _rank_and_score_key_risks(
+    synthesis_claims: list[Claim],
+    base_rnpv: Optional[float] = None,
+) -> None:
+    """Computes risk scores (probability x impact) and sorts key_risks claims descending by score."""
+    key_risks = [c for c in synthesis_claims if c.section == "key_risks"]
+    if not key_risks:
+        return
+
+    for r in key_risks:
+        # Cross-populate impact_musd and impact_pct when base_rnpv is available
+        if r.impact_musd is None and r.impact_pct is not None and base_rnpv is not None and base_rnpv > 0:
+            r.impact_musd = round(r.impact_pct * base_rnpv, 2)
+        elif r.impact_pct is None and r.impact_musd is not None and base_rnpv is not None and base_rnpv > 0:
+            r.impact_pct = round(min(1.0, r.impact_musd / base_rnpv), 4)
+
+        # Compute or refine risk_score (expected dollar loss or normalized loss index)
+        prob = r.probability if r.probability is not None else 0.30
+        if r.impact_musd is not None:
+            r.risk_score = round(prob * r.impact_musd, 2)
+        elif r.impact_pct is not None:
+            scale = base_rnpv if (base_rnpv is not None and base_rnpv > 0) else 100.0
+            r.risk_score = round(prob * r.impact_pct * scale, 2)
+        elif r.risk_score is None:
+            r.risk_score = round(prob * 10.0, 2)
+
+    # Sort key_risks descending by risk_score
+    key_risks.sort(key=lambda c: (c.risk_score if c.risk_score is not None else 0.0), reverse=True)
+
+    # Reorder key_risks in synthesis_claims in-place
+    risk_iter = iter(key_risks)
+    for i, c in enumerate(synthesis_claims):
+        if c.section == "key_risks":
+            synthesis_claims[i] = next(risk_iter)
 
 
 def _enforce_deterministic_financials(
@@ -321,62 +377,99 @@ def _enforce_deterministic_financials(
         synthesis_claims.extend(det_claims[1:])
 
 
-def _enforce_risk_override_guardrail(upstream_claims: list[Claim], synthesis_claims: list[Claim]) -> None:
-    """Enforces committee rules:
-    1. If top risk has high probability and high impact, verdict cannot be 'Invest' without explicit mitigation in reasoning.
-    2. If upstream analyst evidence reports data deficiency ('insufficient evidence'), verdict cannot be 'Invest'.
+def _enforce_risk_override_guardrail(
+    upstream_claims: list[Claim],
+    synthesis_claims: list[Claim],
+    base_rnpv: Optional[float] = None,
+) -> None:
+    """Enforces committee rules using structured numbers, not fragile text markers:
+    1. If upstream analyst evidence reports data deficiency ('insufficient evidence'), verdict cannot be 'Invest'.
+    2. If any key risk is catastrophic (probability >= 70% and impact_pct >= 75%), verdict cannot be 'Invest' (downgrades to Conditional or Do Not Invest).
+    3. If top-ranked key risks have high expected loss (probability >= 40% and impact_pct >= 50% or impact_musd >= 0.40 * base_rnpv), verdict cannot be 'Invest' unless explicitly mitigated in verdict reasoning.
     """
     key_risks = [c for c in synthesis_claims if c.section == "key_risks"]
     verdict_claim = next((c for c in synthesis_claims if c.section == "recommendation" and c.claim in VALID_VERDICTS), None)
 
-    if not verdict_claim or verdict_claim.claim != "Invest":
+    if not verdict_claim or verdict_claim.claim not in ("Invest", "Conditional"):
         return
 
     # Rule 1: Data deficiency check (insufficient evidence)
-    upstream_text = " ".join(f"{c.claim} {c.reasoning or ''}" for c in upstream_claims).lower()
-    insufficient_markers = (
-        "insufficient evidence",
-        "no target association",
-        "no clinical trials found",
-        "lack of evidence",
-    )
-    if any(m in upstream_text for m in insufficient_markers):
-        verdict_claim.claim = "Conditional"
-        verdict_claim.reasoning = (
-            "[Rule Enforcement: Data Deficiency] Upstream analysts reported insufficient evidence or missing foundational data. "
-            "Per investment committee rules, verdict cannot be 'Invest' without validated evidence. Downgraded to Conditional. "
-            + (verdict_claim.reasoning or "")
+    if verdict_claim.claim == "Invest":
+        upstream_text = " ".join(f"{c.claim} {c.reasoning or ''}" for c in upstream_claims).lower()
+        insufficient_markers = (
+            "insufficient evidence",
+            "no target association",
+            "no clinical trials found",
+            "lack of evidence",
         )
-        return
+        if any(m in upstream_text for m in insufficient_markers):
+            verdict_claim.claim = "Conditional"
+            verdict_claim.reasoning = (
+                "[Rule Enforcement: Data Deficiency] Upstream analysts reported insufficient evidence or missing foundational data. "
+                "Per investment committee rules, verdict cannot be 'Invest' without validated evidence. Downgraded to Conditional. "
+                + (verdict_claim.reasoning or "")
+            )
+            return
 
-    # Rule 2: Top-Risk Override (High Probability & High Impact)
     if not key_risks:
         return
 
-    top_risk = key_risks[0]
-    risk_text = f"{top_risk.claim} {top_risk.reasoning or ''}".lower()
+    # Rule 2: Numeric Risk Override across key risks (ranked descending by risk_score)
+    for r in key_risks:
+        prob = r.probability if r.probability is not None else 0.0
+        imp_pct = r.impact_pct if r.impact_pct is not None else 0.0
+        imp_musd = r.impact_musd if r.impact_musd is not None else 0.0
+        score = r.risk_score if r.risk_score is not None else (prob * imp_musd if imp_musd else prob * imp_pct * (base_rnpv or 100.0))
 
-    # Detect high probability and high impact
-    high_prob_markers = ("high prob", "probability: high", ">50%", "60%", "70%", "80%", "90%")
-    high_impact_markers = ("high impact", "critical", "severe", "termination", "zero sales", "negative rpnv", "loss")
+        # Catastrophic unmitigated fatal risk (direct deal-killer)
+        is_fatal = prob >= 0.70 and imp_pct >= 0.75
+        if is_fatal:
+            reasoning_lower = (verdict_claim.reasoning or "").lower()
+            risk_words = [
+                w for w in re.findall(r"\b[a-zA-Z]{5,}\b", r.claim.lower())
+                if w not in ("phase", "trial", "study", "cause", "causing", "causes", "clinical")
+            ]
+            is_explicitly_addressed = any(re.search(rf"\b{re.escape(w)}\b", reasoning_lower) for w in risk_words)
 
-    has_high_prob = any(m in risk_text for m in high_prob_markers)
-    has_high_impact = any(m in risk_text for m in high_impact_markers)
+            if not is_explicitly_addressed:
+                verdict_claim.claim = "Do Not Invest"
+                verdict_claim.reasoning = (
+                    f"[Rule Enforcement: Fatal Risk Override] Risk ('{r.claim}') presents catastrophic expected loss "
+                    f"(Probability: {prob*100:.0f}%, rNPV Impact: -{imp_pct*100:.0f}%, Risk Score: {score:.1f}). "
+                    f"Per committee rules, unmitigated catastrophic risk mandates 'Do Not Invest'. "
+                    + (verdict_claim.reasoning or "")
+                )
+                return
 
-    if has_high_prob and has_high_impact:
-        reasoning_lower = (verdict_claim.reasoning or "").lower()
-        # Verify whether key terms from the risk description are addressed in the verdict
-        risk_words = [w for w in top_risk.claim.lower().split() if len(w) > 4]
-        is_explicitly_addressed = any(w in reasoning_lower for w in risk_words)
-
-        if not is_explicitly_addressed:
-            verdict_claim.claim = "Conditional"
-            verdict_claim.reasoning = (
-                f"[Rule Enforcement: High Risk Override] Top risk ('{top_risk.claim}') has both high probability "
-                f"and high impact on rNPV. The committee downgraded the verdict from Invest to Conditional "
-                f"because this critical risk was not explicitly mitigated. "
-                + (verdict_claim.reasoning or "")
+        # High expected loss risk override when verdict is "Invest"
+        if verdict_claim.claim == "Invest":
+            is_high_prob = prob >= 0.40
+            is_high_impact = (
+                imp_pct >= 0.50
+                or (base_rnpv is not None and base_rnpv > 0 and imp_musd >= 0.40 * base_rnpv)
+                or (score >= (0.20 * base_rnpv if (base_rnpv and base_rnpv > 0) else 20.0))
             )
+
+            if is_high_prob and is_high_impact:
+                reasoning_lower = (verdict_claim.reasoning or "").lower()
+                risk_words = [
+                    w for w in re.findall(r"\b[a-zA-Z]{5,}\b", r.claim.lower())
+                    if w not in ("phase", "trial", "study", "cause", "causing", "causes", "clinical")
+                ]
+                is_explicitly_addressed = any(re.search(rf"\b{re.escape(w)}\b", reasoning_lower) for w in risk_words)
+
+                if not is_explicitly_addressed:
+                    verdict_claim.claim = "Conditional"
+                    prob_pct_str = f"{prob * 100:.0f}%"
+                    imp_pct_str = f"-{imp_pct * 100:.0f}%" if imp_pct > 0 else (f"-${imp_musd:.1f}M" if imp_musd > 0 else "High")
+                    verdict_claim.reasoning = (
+                        f"[Rule Enforcement: High Risk Override] Top risk ('{r.claim}') has high expected loss "
+                        f"(Probability: {prob_pct_str}, Impact: {imp_pct_str}, Risk Score: {score:.1f}). "
+                        f"The committee downgraded the verdict from Invest to Conditional because this critical risk "
+                        f"was not explicitly mitigated in the investment thesis. "
+                        + (verdict_claim.reasoning or "")
+                    )
+                    return
 
 
 def _is_duplicate_question(q_text: str, questions: list[Claim]) -> bool:
