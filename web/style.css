@@ -1,19 +1,45 @@
 :root {
   --bg:#f7f7f7; --card:#fff; --line:#e8e8ec; --text:#1f2430; --muted:#6b7280;
   --blue:#2563eb; --blue-soft:#9dbcf8; --amber:#b45309; --red:#c0392b;
-  --tint:#e8f0fe; --green:#1e7e34; --assistant-bg:#f4f6fa;
+  --tint:#e8f0fe; --green:#1e7e34;
 }
 * { box-sizing: border-box; }
 body { margin:0; display:flex; height:100vh; font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--text); background:var(--bg); }
 .hidden { display:none !important; }
 
-/* sidebar */
-#sidebar { width:290px; flex:none; background:#fff; border-right:1px solid var(--line); padding:18px; overflow-y:auto; }
+/* sidebar — a fixed header, then two collapsible/scrollable panels
+   (Searches, Assistant) separated by a draggable resizer */
+#sidebar { width:290px; flex:none; background:#fff; border-right:1px solid var(--line); display:flex; flex-direction:column; overflow:hidden; }
 #sidebar.collapsed { display:none; }
-.side-head { display:flex; justify-content:space-between; align-items:center; font-size:14px; color:var(--muted); margin-bottom:14px; }
+.side-head { display:flex; justify-content:space-between; align-items:center; font-size:14px; color:var(--muted); padding:18px 18px 10px; flex:none; }
 .side-head button, #open-sidebar { display:flex; align-items:center; background:none; border:0; cursor:pointer; color:var(--muted); padding:2px; border-radius:4px; }
 .side-head button:hover, #open-sidebar:hover { color:var(--text); background:var(--bg); }
-#history { list-style:none; margin:0; padding:0; }
+
+.sidebar-panel { display:flex; flex-direction:column; overflow:hidden; }
+#history-panel { flex:0 0 auto; height:240px; min-height:40px; }
+#assistant-panel { flex:1 1 auto; min-height:40px; }
+.sidebar-panel.collapsed { flex:none !important; height:auto !important; }
+.sidebar-panel.collapsed .panel-body { display:none; }
+
+.panel-toggle {
+  display:flex; align-items:center; gap:6px; width:100%; flex:none; background:none; border:0; cursor:pointer;
+  padding:8px 18px; font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted);
+}
+.panel-toggle:hover { color:var(--text); }
+.panel-toggle .chevron { flex:none; transition:transform .15s; }
+.panel-toggle[aria-expanded="false"] .chevron { transform:rotate(-90deg); }
+
+.panel-body { flex:1; display:flex; flex-direction:column; overflow:hidden; min-height:0; padding:0 18px 14px; }
+.panel-filter { flex:none; width:100%; padding:7px 10px; font-size:13px; border:1px solid var(--line); border-radius:6px; outline:none; margin-bottom:8px; }
+.panel-filter:focus { border-color:var(--blue); }
+
+/* draggable boundary between the two sidebar panels */
+.sidebar-resizer { flex:none; height:9px; cursor:row-resize; position:relative; }
+.sidebar-resizer::after { content:""; position:absolute; left:18px; right:18px; top:4px; height:1px; background:var(--line); }
+.sidebar-resizer:hover::after, .sidebar-resizer.dragging::after { background:var(--blue); height:2px; top:3.5px; }
+.sidebar-resizer.disabled { cursor:default; pointer-events:none; }
+
+#history { list-style:none; margin:0; padding:0; flex:1; overflow-y:auto; min-height:0; }
 #history li { padding:10px 12px; border-radius:8px; cursor:pointer; margin-bottom:4px; }
 #history li.empty-item { cursor:default; color:var(--muted); padding:6px 12px; }
 #history li:not(.empty-item):hover { background:var(--bg); }
@@ -33,22 +59,18 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 #evaluate { background:var(--blue); color:#fff; border:0; border-radius:6px; padding:11px 20px; font-size:15px; font-weight:600; cursor:pointer; }
 #evaluate:disabled { background:var(--blue-soft); cursor:default; }
 
-/* assistant panel — sits in the top-right of the bar, lifted off the white bar
-   by its own tinted background, border and shadow */
-.assistant { flex:none; width:330px; background:var(--assistant-bg); border:1px solid var(--line);
-             border-radius:10px; padding:10px 12px; box-shadow:0 1px 4px rgba(0,0,0,.07); color:#000; }
-.assistant-head { font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
-                  color:#000; margin-bottom:8px; }
-.assistant-form { display:flex; gap:8px; }
-.assistant-form input { flex:1; min-width:0; padding:9px 11px; font-size:14px; color:#000; background:#fff;
+/* assistant panel — now embedded in the sidebar (#assistant-panel), so it
+   takes the sidebar's own chrome rather than carrying its own card styling */
+.assistant-form { display:flex; gap:8px; flex:none; }
+.assistant-form input { flex:1; min-width:0; padding:9px 11px; font-size:14px; color:var(--text); background:#fff;
                         border:1px solid var(--line); border-radius:6px; outline:none; }
 .assistant-form input::placeholder { color:var(--muted); }
 .assistant-form input:focus { border-color:var(--blue); }
 #assistant-send { flex:none; background:var(--blue); color:#fff; border:0; border-radius:6px;
                   padding:9px 16px; font-size:14px; font-weight:600; cursor:pointer; }
 #assistant-send:disabled { background:var(--blue-soft); cursor:default; }
-.assistant-log { max-height:190px; overflow-y:auto; margin-bottom:8px; padding-right:2px; }
-.assistant-msg { font-size:14px; line-height:1.45; color:#000; padding:6px 0; border-top:1px solid var(--line); }
+.assistant-log { flex:1; overflow-y:auto; min-height:0; margin-bottom:8px; padding-right:2px; }
+.assistant-msg { font-size:14px; line-height:1.45; color:var(--text); padding:6px 0; border-top:1px solid var(--line); }
 .assistant-msg:first-child { border-top:0; padding-top:0; }
 .assistant-msg .who { display:block; font-size:11px; font-weight:700; letter-spacing:.03em;
                       text-transform:uppercase; color:var(--muted); margin-bottom:2px; }
@@ -172,7 +194,6 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 @media (max-width:800px) {
   #sidebar { display:none; }
   .topbar { padding:12px 16px; flex-wrap:wrap; }
-  .assistant { width:100%; }
   #content { padding:16px; }
   .grid { gap:16px; }
   .card { min-height:0; }

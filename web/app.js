@@ -60,17 +60,26 @@ function historyLabel(s) {
   return `${s.mechanism} — ${s.indication}`;
 }
 
+let lastActiveHistoryKey = null;
+let historyFilter = "";
+
 function renderHistory(activeKey) {
+  if (typeof activeKey !== "undefined") lastActiveHistoryKey = activeKey;
   const ul = $("history");
   ul.innerHTML = "";
-  if (!searches.length) {
-    ul.innerHTML = '<li class="empty-item">Nothing yet</li>';
+
+  const filtered = historyFilter
+    ? searches.filter((s) => historyLabel(s).toLowerCase().includes(historyFilter))
+    : searches;
+
+  if (!filtered.length) {
+    ul.innerHTML = `<li class="empty-item">${searches.length ? "No matches" : "Nothing yet"}</li>`;
     return;
   }
-  searches.forEach((s) => {
+  filtered.forEach((s) => {
     const key = `${s.indication}\u0000${s.mechanism}`;
     const li = document.createElement("li");
-    li.className = key === activeKey ? "active" : "";
+    li.className = key === lastActiveHistoryKey ? "active" : "";
     li.innerHTML = `<span class="q">${esc(historyLabel(s))}</span>
       <span class="when">${esc(whenLabel(s.at))} · ${filledCount(s.report)}/${s.report.cards.length}</span>`;
     li.title = historyLabel(s);
@@ -85,6 +94,11 @@ function renderHistory(activeKey) {
     ul.appendChild(li);
   });
 }
+
+$("history-search").oninput = () => {
+  historyFilter = $("history-search").value.trim().toLowerCase();
+  renderHistory();
+};
 
 function renderItem(item) {
   if (item.kind === "analog") {
@@ -429,6 +443,55 @@ $("mechanism").oninput = updateEvaluateEnabled;
 $("query").oninput = updateEvaluateEnabled;
 $("toggle-sidebar").onclick = () => { $("sidebar").classList.add("collapsed"); $("open-sidebar").classList.remove("hidden"); };
 $("open-sidebar").onclick = () => { $("sidebar").classList.remove("collapsed"); $("open-sidebar").classList.add("hidden"); };
+
+/* The two sidebar panels (Searches, Assistant) each collapse independently
+   via their own header button, and share one draggable resizer that only
+   does anything while both are expanded (nothing to resize otherwise). */
+const MIN_PANEL_HEIGHT = 60;
+
+function updateSidebarResizer() {
+  const disabled =
+    $("history-panel").classList.contains("collapsed") || $("assistant-panel").classList.contains("collapsed");
+  $("sidebar-resizer").classList.toggle("disabled", disabled);
+}
+
+document.querySelectorAll(".panel-toggle").forEach((btn) => {
+  btn.onclick = () => {
+    const panel = btn.closest(".sidebar-panel");
+    const collapsed = panel.classList.toggle("collapsed");
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    updateSidebarResizer();
+  };
+});
+
+(function initSidebarResizer() {
+  const resizer = $("sidebar-resizer");
+  const historyPanel = $("history-panel");
+  let startY = 0;
+  let startHeight = 0;
+
+  function onMove(e) {
+    const sidebarRect = $("sidebar").getBoundingClientRect();
+    const maxHeight = sidebarRect.height - MIN_PANEL_HEIGHT - resizer.getBoundingClientRect().height - 40;
+    const newHeight = Math.min(Math.max(startHeight + (e.clientY - startY), MIN_PANEL_HEIGHT), Math.max(MIN_PANEL_HEIGHT, maxHeight));
+    historyPanel.style.height = `${newHeight}px`;
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    resizer.classList.remove("dragging");
+  }
+  resizer.addEventListener("mousedown", (e) => {
+    if (resizer.classList.contains("disabled")) return;
+    e.preventDefault();
+    startY = e.clientY;
+    startHeight = historyPanel.getBoundingClientRect().height;
+    resizer.classList.add("dragging");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+})();
+
 $("modal-close").onclick = closeModal;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });

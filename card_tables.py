@@ -160,7 +160,32 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
             },
         },
     }
-    return {"view": "graph", "chart": chart, "chart_details": chart_details}
+
+    # Expanded (modal) view only: every single fetched record, not just the
+    # top 6 the pie slices show, each tagged with the same color as its pie
+    # slice (so a reader can connect a row back to the chart at a glance) —
+    # a company past the chart's top 6 gets no color, it simply isn't a
+    # slice. Grouped by company (same color together) then newest-first.
+    color_by_name = {name: _PIE_PALETTE[i % len(_PIE_PALETTE)] for i, (name, _) in enumerate(top)}
+    all_rows = []
+    for name, _n in counts.most_common():  # every company, most filings first — matches the pie's own ranking
+        for r in sorted(by_name[name], key=lambda r: r.get("file_date") or "", reverse=True):
+            all_rows.append({
+                "Company": name,
+                "Form": r.get("form") or NA,
+                "Filed": r.get("file_date") or NA,
+                "Matched Term": r.get("matched_term") or NA,
+                "Source": _cell(r.get("source"), r.get("url")),
+                "_color": color_by_name.get(name),
+            })
+
+    return {
+        "view": "graph",
+        "chart": chart,
+        "chart_details": chart_details,
+        "table_columns": ["Company", "Form", "Filed", "Matched Term", "Source"],
+        "table_rows": all_rows,
+    }
 
 
 # ---------------------------------------------------------------------------
