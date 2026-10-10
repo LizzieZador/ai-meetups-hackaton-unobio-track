@@ -151,9 +151,3 @@ def fetch_competitor_profiles(target_symbol: str, analog_names: list[str], trial
         seen.add(_norm(p["name"]))
         out.append(_record(p, "trial_registry", [n for n in trials_by_name[key] if n], today))
     return out
-
-
-if __name__ == "__main__":
-    import sys
-
-    print(json.dumps(fetch_drug_profile(sys.argv[1] if len(sys.argv) > 1 else "sotorasib"), indent=2))

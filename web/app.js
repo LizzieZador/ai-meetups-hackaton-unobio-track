@@ -132,9 +132,8 @@ let current = null; // the report on screen, so the expand buttons can find thei
 function loadHistory() {
   try {
     const list = JSON.parse(localStorage.getItem(KEY));
-    // Entries saved by an older build of this page (single combined "query",
-    // or quick_summary/verdict_claims-shaped reports) have a different shape
-    // and would break rendering — drop anything that isn't the current shape.
+    // Entries saved by an older build of this page have a different shape and
+    // would break rendering — drop anything that isn't the current shape.
     return Array.isArray(list)
       ? list.filter((s) => s && s.indication && s.mechanism && Array.isArray(s.report?.cards))
       : [];

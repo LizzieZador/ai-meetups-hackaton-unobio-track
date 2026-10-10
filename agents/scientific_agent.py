@@ -10,17 +10,9 @@ Executes two focused agent runs via agents/base.py:
    molecular effect -> human exposure -> target engagement -> biological response -> patient benefit
    with explicit detection of MISSING LINKs.
 """
-import sys
-from pathlib import Path
 from typing import Any, Optional
 
-# Ensure project root is in path for standalone execution
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from schema import Claim
-from llm import get_usage_summary, reset_usage_log
 from sources.fetch_pubmed import fetch_pubmed
 from sources.fetch_opentargets import fetch_opentargets, get_target_context
 from .base import label_sources, run_agent_llm_with_retry
@@ -293,44 +285,3 @@ def scientific_agent(
     )
 
     return claims_sci + claims_trans
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Test Scientific Agent standalone.")
-    parser.add_argument("indication", nargs="?", default="NSCLC", help="Indication/disease")
-    parser.add_argument("mechanism", nargs="?", default="KRAS G12C", help="Target/mechanism")
-    parser.add_argument("--cutoff-date", default=None, help="Cutoff date (YYYY-MM-DD)")
-    args = parser.parse_args()
-
-    print(f"=== TESTING SCIENTIFIC AGENT: [{args.indication} | {args.mechanism}] ===")
-    if args.cutoff_date:
-        print(f"Cutoff date applied: {args.cutoff_date}")
-
-    reset_usage_log()
-    claims = scientific_agent(indication=args.indication, mechanism=args.mechanism, cutoff_date=args.cutoff_date)
-
-    print(f"\n=== GENERATED CLAIMS ({len(claims)}) ===")
-    by_section: dict[str, list[Claim]] = {}
-    for c in claims:
-        by_section.setdefault(c.section, []).append(c)
-
-    for section, sec_claims in by_section.items():
-        print(f"\n--- Section: {section} ({len(sec_claims)} claims) ---")
-        for c in sec_claims:
-            badge = f"[{c.type.upper()}]"
-            if c.type == "evidence":
-                print(f"  {badge} {c.claim}")
-                print(f"       source: {c.source} | quote: {c.exact_snippet[:80]}...")
-            else:
-                conf = f"conf: {c.confidence}"
-                based = f"based_on: {c.based_on}" if hasattr(c, "based_on") and c.based_on else ""
-                print(f"  {badge} {c.claim} ({conf} {based})")
-                print(f"       reasoning: {c.reasoning}")
-
-    usage = get_usage_summary()
-    print("\n=== LLM USAGE & COST ===")
-    print(f"Calls: {usage.get('calls')}, Model: {usage.get('model')}")
-    print(f"Tokens: {usage.get('input_tokens')} in / {usage.get('output_tokens')} out")
-    print(f"Estimated Cost: ${usage.get('approx_cost_usd', 0.0)}")

@@ -71,9 +71,8 @@ def _sponsor_display(reg: dict | None, orange_book: dict[str, dict] | None = Non
 
 
 def _short(text: str, limit: int = 130) -> str:
-    """Trim to the point, never mid-word/mid-sentence — same safety-net
-    pattern as quick_summary.py's _short(), just a tighter default limit:
-    a table cell needs the fact, not the full sentence it came wrapped in."""
+    """Trim to the point, never mid-word/mid-sentence: a table cell needs
+    the fact, not the full sentence it came wrapped in."""
     text = (text or "").strip()
     if len(text) <= limit:
         return text

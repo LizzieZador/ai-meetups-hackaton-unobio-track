@@ -139,10 +139,3 @@ def _build_record(name: str, hit: dict, today: str) -> Optional[dict]:
         "date_accessed": today,
         "raw_snippet": snippet,
     }
-
-
-if __name__ == "__main__":
-    import sys
-
-    names = sys.argv[1:] or ["sotorasib"]
-    print(json.dumps(fetch_patent_signals(names), indent=2))

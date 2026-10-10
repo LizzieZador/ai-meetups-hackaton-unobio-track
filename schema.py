@@ -27,9 +27,8 @@ Section = Literal[
     "diligence_questions",
 ]
 
-# Order here is the render order, and matches the "Required Output" list verbatim.
-# "Sources supporting major claims" is deliberately not a key here — it isn't a
-# section any agent writes into, it's assembled by report.py from evidence claims.
+# Matches the task brief's "Required Output" list. "Sources supporting major
+# claims" is not a section: sources travel on each evidence claim itself.
 SECTION_TITLES: dict[str, str] = {
     "recommendation": "Recommendation",
     "scientific_thesis": "Scientific Thesis",

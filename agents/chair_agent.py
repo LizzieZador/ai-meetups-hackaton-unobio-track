@@ -4,17 +4,9 @@ evidence, or changing any claim's section, while aggregating — it may only ADD
 new claims. Covers Required Output sections "recommendation", "capital_required",
 "key_risks", "critical_unknowns", and "diligence_questions".
 """
-import datetime
 import json
 import re
-import sys
 from collections import defaultdict
-from pathlib import Path
-
-# Ensure project root is in sys.path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from financials import (
     FinancialResult,
@@ -23,7 +15,7 @@ from financials import (
     run_deterministic_financials,
 )
 from llm import ask_claude_json
-from schema import Claim, parse_claims, SECTION_TITLES, SECTION_ALIASES, log_dropped_claim
+from schema import Claim, parse_claims, SECTION_ALIASES, log_dropped_claim
 CHAIR_SECTIONS = {
     "key_risks",
     "capital_required",
@@ -891,72 +883,3 @@ def _enforce_diligence_questions_guardrail(
     synthesis_claims.extend(final_questions)
 
 
-def generate_executive_summary(claims: list[Claim]) -> str:
-    """Generates an Executive Summary synthesized from analyst and chair claims."""
-    by_section: dict[str, list[Claim]] = defaultdict(list)
-    for c in claims:
-        by_section[c.section].append(c)
-
-    # 1. Verdict
-    verdict_claims = [c for c in by_section.get("recommendation", []) if c.claim in VALID_VERDICTS]
-    verdict = verdict_claims[0].claim if verdict_claims else "Conditional"
-
-    # 2. Cohesive narrative synthesis if provided by LLM:
-    llm_summary_claim = next(
-        (c for c in by_section.get("recommendation", []) if c.claim.lower().startswith("executive summary:")),
-        None,
-    )
-    llm_narrative = ""
-    if llm_summary_claim:
-        llm_narrative = llm_summary_claim.claim.replace("Executive Summary:", "").strip()
-        if llm_summary_claim.reasoning:
-            llm_narrative += f" (Rationale: {llm_summary_claim.reasoning})"
-
-    # 3. Scientific & Human Translation (from scientific analyst)
-    sci_claims = by_section.get("scientific_thesis", [])
-    trans_claims = by_section.get("human_translation_thesis", [])
-    sci_pts = [f"- **Target Biology:** {c.claim}" for c in sci_claims[:2]]
-    trans_pts = [f"- **Human Translation:** {c.claim}" for c in trans_claims[:1]]
-
-    # 4. Clinical Development Plan (from clinical analyst)
-    clin_claims = by_section.get("clinical_development_plan", [])
-    clin_pts = [f"- **Clinical Development:** {c.claim}" for c in clin_claims[:2]]
-
-    # 5. Competitive Landscape & Commercial Opportunity (from commercial analyst)
-    comp_claims = by_section.get("competitive_landscape", [])
-    comm_claims = by_section.get("commercial_opportunity", [])
-    comp_pts = [f"- **Competitive Field:** {c.claim}" for c in comp_claims[:1]]
-    comm_pts = [f"- **Market & Unmet Need:** {c.claim}" for c in comm_claims[:1]]
-
-    # 6. Risks & rNPV
-    risk_claims = by_section.get("key_risks", [])
-    top_risk_pt = [f"- **Primary Threat:** {risk_claims[0].claim}"] if risk_claims else []
-    rnpv_claims = [c for c in by_section.get("recommendation", []) if "rnpv" in c.claim.lower()]
-    rnpv_pt = [f"- **Valuation (rNPV):** {rnpv_claims[0].claim}"] if rnpv_claims else []
-
-    summary = [
-        "## Executive Summary",
-        f"**Underwriting Recommendation:** `{verdict}`",
-        "",
-    ]
-    if llm_narrative:
-        summary.extend([f"**Committee Synthesis Narrative:** {llm_narrative}", ""])
-
-    summary.append("**Core Evidence Drivers Across Dimensions:**")
-    summary.extend(sci_pts)
-    summary.extend(trans_pts)
-    summary.extend(clin_pts)
-    summary.extend(comp_pts)
-    summary.extend(comm_pts)
-    summary.extend(top_risk_pt)
-    summary.extend(rnpv_pt)
-
-    return "\n".join(summary)
-
-
-def render_underwriting_report(
-    indication: str, mechanism: str, claims: list[Claim], cost_summary: str | None = None
-) -> str:
-    """Renders final Investment Underwriting Report (delegates to report.render_report)."""
-    from report import render_report
-    return render_report(indication, mechanism, claims, cost_summary)

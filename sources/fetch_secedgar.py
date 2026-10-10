@@ -5,11 +5,7 @@ Owner: "Market sentiment & expert intelligence" card. SEC EDGAR indexes every
 8-K (material event), 10-K/10-Q and press-release exhibit public biotech/pharma
 companies file — the closest free, no-key, no-login source this project has to
 "press releases" and "company disclosures." It does not cover earnings-call
-audio/transcripts or analyst/KOL commentary (no free source exists for those;
-see sources/fetch_cms.py's Open Payments helpers for the adjacent "industry
-money to physicians" signal, which is a different kind of market intelligence
-and is intentionally not wired into this card — it's about conflicts of
-interest for named physicians, not sentiment on a specific program).
+audio/transcripts or analyst/KOL commentary (no free source exists for those).
 """
 import datetime
 import hashlib
@@ -125,10 +121,3 @@ def _build_record(term: str, hit: dict, today: str) -> Optional[dict]:
         "raw_snippet": ", ".join(snippet_parts),
         "_hit_id": hit_id,
     }
-
-
-if __name__ == "__main__":
-    import sys
-
-    names = sys.argv[1:] or ["sotorasib"]
-    print(json.dumps(fetch_press_releases(names), indent=2))

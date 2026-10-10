@@ -1106,12 +1106,3 @@ def _process_and_summarize(
         ],
         "nct_ids": nct_ids,
     }
-
-
-if __name__ == "__main__":
-    cond = sys.argv[1] if len(sys.argv) > 1 else "NSCLC"
-    intr = sys.argv[2] if len(sys.argv) > 2 else "pembrolizumab"
-    cutoff = (sys.argv[3] if len(sys.argv) > 3 else "") or None
-    mech = [x.strip() for x in sys.argv[4].split(",")] if len(sys.argv) > 4 and sys.argv[4] else None
-    res = fetch_aact(cond, intr, cutoff_date=cutoff, same_mechanism_drugs=mech)
-    print(json.dumps(res, indent=2, ensure_ascii=False, default=str))

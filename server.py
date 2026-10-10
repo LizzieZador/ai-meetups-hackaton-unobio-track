@@ -1,6 +1,6 @@
 """Web UI backend — serves the static front-end in web/ and exposes the pipeline as JSON.
 
-GET  /              -> web/index.html (search sidebar + the 12-card grid)
+GET  /              -> web/index.html (search sidebar + the 10-card grid)
 POST /api/evaluate   -> {"indication": "...", "mechanism": "..."} OR {"query": "mechanism | indication"}
                         -> {verdict, cards, cost}
 POST /api/assistant   -> {"message": "...", "history": [...], "report": <loaded report | null>}
@@ -8,7 +8,6 @@ POST /api/assistant   -> {"message": "...", "history": [...], "report": <loaded 
 
 Card layout and the mapping from claim sections / fetched sources onto cards
 lives in cards.py; this module only turns a query into one pipeline run.
-The Streamlit app (app.py) stays as an alternative UI; both call run_pipeline().
 Run: python server.py  (http://127.0.0.1:5000)
 """
 import re

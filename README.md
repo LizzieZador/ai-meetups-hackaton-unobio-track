@@ -1,197 +1,85 @@
 # AI-інвесткомітет для біотеху
 
-За 7 днів зібрати систему, яка на вхід бере **Disease/Indication + Mechanism/target**
-(опційно — modality, development stage, preclinical results, biomarkers, route of
-administration), а на вихід дає **Investment Underwriting Report** з вердиктом
-(**Invest / Conditional / Do Not Invest**) і чітким розмежуванням **evidence**
-(факт із джерела) та **AI inference** (судження моделі) по кожному висновку.
-
-Технічне завдання — `plan/Moving Beyond the Molecule — How to Underwrite Biotech.docx`
-(офіційний бриф хакатону). 7-денний план виконання команди, похідний від нього —
-`plan/План AI-інвесткомітет для біотеху (7 днів, команда 5).docx`.
-
-## Required Output — обов'язкові секції звіту
-
-Звіт генерується форматуванням `Claim`-об'єктів у ці секції, точно за списком
-"Required Output" з ТЗ (`report.py`, `schema.py: SECTION_TITLES`):
-
-1. **Recommendation** — Invest / Conditional / Do Not Invest
-2. **Scientific thesis**
-3. **Human translation thesis**
-4. **Clinical development plan**
-5. **Competitive landscape**
-6. **Commercial opportunity**
-7. **Capital required to reach the next major milestone**
-8. **Key risks and failure modes**
-9. **Critical unknowns**
-10. **5–10 highest-value diligence questions**
-11. **Sources supporting major claims** — збирається кодом із evidence-claims, а не генерується агентом
-
-## Команда, ролі та секції звіту
-
-| Роль | Відповідає за | Джерела | Секції звіту |
-|---|---|---|---|
-| Тімлід / Голова комітету | Фінальний синтез, вердикт, ризики, risk-adjusted return | — (агрегує) | Recommendation, Capital Required, Key Risks, Critical Unknowns, Diligence Questions |
-| Науковий аналітик | Біологічна валідація мішені, human translation | PubMed, Open Targets | Scientific Thesis, Human Translation Thesis |
-| Клінічний аналітик | Стадія розробки, дизайн випробувань, регуляторний шлях | ClinicalTrials.gov, AACT | Clinical Development Plan |
-| Комерційний аналітик | Конкуренти, unmet need, ринок (переважно inference) | похідні з AACT/Open Targets | Competitive Landscape, Commercial Opportunity |
-| Інженер пайплайну | Код, інтеграції, evidence/inference-формат, стабільність демо | — (vibe-coding усього пайплайну) | Працездатна система |
-
-Ролі без ротації. Ланцюжок: biology → human translation → clinical development →
-regulations → competition → commercial value → investment return — висновок
-одного виміру є вхідними даними наступного (так влаштований `pipeline.py`).
-
-> Задача "Disease and Unmet Need" (патієнтна популяція, стандарт лікування,
-> unmet need) з ТЗ не має окремої ролі серед п'яти фіксованих — покрита
-> Комерційним аналітиком у секції Commercial Opportunity, оскільки тематично
-> найближча і так само спирається на похідні дані, а не пряме джерело.
-
-## Архітектура
-
-```
-collect_sources() -> scientific_agent() -> clinical_agent() -> commercial_agent() -> chair_agent() -> render_report()
-```
-
-3 агенти (scientific, clinical, commercial) працюють послідовно по ланцюжку,
-голова комітету (`chair_agent`) додає нові claims (вердикт, ризики, капітал,
-unknowns, diligence questions) і ніколи не перетворює `inference` на `evidence`
-чи не змінює `section` вже отриманих claims.
-
-Стек навмисно мінімальний: Python, прямі виклики Claude API (`anthropic` SDK,
-без LangChain/CrewAI/LangGraph), Streamlit для UI, JSON-файли на диску замість БД.
-
-```
-.
-├── app.py                      # Streamlit UI з інтерактивним drill-down
-├── main.py                     # CLI для тестування без UI
-├── pipeline.py                 # orchestration + JSON-трейс кожного запуску
-├── schema.py                   # Claim: evidence/inference-схема + секції звіту
-├── llm.py                      # виклик Claude API + трекінг токенів/вартості
-├── report.py                   # рендер claims -> Markdown за секціями ТЗ
-├── sources/
-│   ├── cache.py                # JSON-кеш відповідей API
-│   ├── fetch_pubmed.py
-│   ├── fetch_opentargets.py
-│   ├── fetch_clinicaltrials.py
-│   ├── fetch_aact.py           # зовнішня Postgres БД або flat-файли
-│   ├── fetch_regulatory.py     # openFDA Drugs@FDA point queries
-│   ├── fetch_secedgar.py       # SEC EDGAR filing search
-│   └── fetch_patentsview.py    # USPTO ODP bulk downloads; не інтегровано в pipeline
-├── agents/
-│   ├── scientific_agent.py
-│   ├── clinical_agent.py
-│   ├── commercial_agent.py
-│   └── chair_agent.py
-├── cache/                      # кешовані відповіді джерел (git-ignored)
-├── data/aact/                  # сюди покласти studies.txt/conditions.txt з AACT
-└── data/reports/               # JSON-трейси запусків (git-ignored)
-```
-
-## Evidence vs inference
-
-Кожне твердження в системі — об'єкт `Claim` (`schema.py`), а не рядок тексту.
-Кожен claim також прив'язаний до `section` зі списку Required Output:
-
-```json
-{"claim": "Експресія мішені підвищена при метастазах", "type": "evidence", "section": "scientific_thesis", "source": "PubMed PMID:12345678", "url": "...", "date_accessed": "2026-10-04", "exact_snippet": "..."}
-{"claim": "Це підвищує ймовірність відповіді на терапію в цій підгрупі пацієнтів", "type": "inference", "section": "human_translation_thesis", "reasoning": "...", "confidence": "medium"}
-```
-
-- `type: evidence` — модель НЕ генерує це поле сама; `source` обов'язковий, інакше
-  `parse_claims()` відкидає запис кодом, а не довірою до LLM.
-- `type: inference` — обов'язкові `reasoning` і `confidence` (low/medium/high).
-- `section`, що не входить у `SECTION_TITLES`, теж відкидається кодом — агент не
-  може "вигадати" нову секцію на льоту.
-
-## Interactive Evidence
-
-ТЗ вимагає можливість переходу **Recommendation → Claims → Evidence → Sources**.
-`app.py` реалізує це через Streamlit expanders: вердикт — одразу вгорі, далі
-розгортувані секції з claims, кожен claim показує своє джерело або reasoning,
-і окремий розгортуваний список усіх зібраних джерел унизу.
-
-## Reproducibility (Required Deliverable)
-
-- **Source attribution** — кожен evidence claim має точне джерело й URL; ручні
-  market-data рядки лишаються unverified, доки аналітик не додасть точний
-  `Evidence_Snippet` / `Pricing_Evidence_Snippet` і не поставить відповідний
-  `Data_Verified` / `Pricing_Verified` у `yes`.
-- **Model/API usage** — `llm.py` підтримує командний OpenAI-сумісний gateway,
-  Gemini та Claude з fallback між налаштованими провайдерами.
-- **Approximate cost per run** — токени рахуються окремо для кожного виклику та
-  оцінюються за ставкою відповідного провайдера; тариф gateway у коді поки
-  позначений нульовою заглушкою, тому його оцінка вартості ненадійна.
-- **Logs / traces** — кожен запуск `run_pipeline()` пише JSON-трейс у
-  `data/reports/run_<timestamp>_<pair>.json`: indication, mechanism, сирі
-  джерела, усі claims, вартість — повна відтворюваність одного запуску.
-
-## Підключені джерела й обмеження
-
-Вбудованої бази даних у проєкті немає: джерела викликаються через API, результати
-тимчасово зберігаються у JSON-кеші, а AACT може додатково читати зовнішній
-PostgreSQL або flat-файли. У `pipeline.py` фактично підключені PubMed, Open
-Targets, ClinicalTrials.gov, AACT, CSV market data, openFDA Drugs@FDA та SEC
-EDGAR.
-
-- **openFDA Drugs@FDA** шукає вже схвалені заявки для препаратів-аналогів з Open
-  Targets. Повертає approval actions і лише ті designations, які є в метаданих
-  submission (наприклад, Orphan та Priority Review). Це не повний реєстр
-  Fast Track / Breakthrough для досліджуваного активу і не доказ, що нашій
-  програмі надано таке призначення.
-- **SEC EDGAR** повертає знайдені 8-K filings і метадані/посилання на exhibits.
-  Це сигнал компанійних розкриттів, але код не витягує і не аналізує повний
-  текст, не визначає sentiment і не покриває earnings-call/KOL коментарі.
-- **PatentsView** у `sources/fetch_patentsview.py` — окремий bulk-download
-  інструмент для USPTO Open Data Portal (ODP), а не live пошук патентів. Він
-  потребує `USPTO_ODP_API_KEY`, не викликається з `pipeline.py`, тому картка
-  Patent & IP зараз свідомо не підключена. Не позначайте її як перевірену.
+Веб-застосунок: на вхід — **Mechanism/Target + Indication**, на вихід — вердикт
+**Invest / Conditional / Do Not Invest** і 10 карток з даними, де кожне
+твердження чітко позначене як **evidence** (факт із джерела з посиланням) або
+**inference** (судження моделі з обґрунтуванням і рівнем впевненості).
 
 ## Запуск
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # вписати GEMINI_API_KEY (пріоритетний, `gemini-3.5-flash`) або ANTHROPIC_API_KEY (+ опційно AACT_DB_* для живої БД)
-streamlit run app.py
-# або веб-UI з боковою панеллю пошуків і картками звіту (server.py + web/):
-python server.py   # http://127.0.0.1:5000
-# або без UI:
-python main.py "non-small cell lung cancer" "KRAS G12C inhibitor"
-python main.py "non-small cell lung cancer" "KRAS G12C inhibitor" "oral, Phase 1 ongoing"
+cp .env.example .env    # ключі LLM і (опційно) доступ до AACT
+python server.py        # http://127.0.0.1:5000
 ```
 
-AACT підключається двома способами (`fetch_aact.py` пробує їх по черзі):
-1. **Жива БД** (пріоритетно) — заповніть `AACT_DB_HOST/PORT/NAME/USER/PASSWORD`
-   у `.env` (read-only доступ до `aact-db.ctti-clinicaltrials.org`, схема `ctgov`,
-   таблиці `studies`/`conditions`). Пароль лежить лише в `.env`, який у
-   `.gitignore` — ніколи не комітиться.
-2. **Flat-файли** (fallback) — якщо БД недоступна, завантажте `studies.txt` і
-   `conditions.txt` з aact.ctti-clinicaltrials.org у `data/aact/`.
+Запит вводиться одним рядком: `KRAS G12C | Non-Small Cell Lung Cancer`
+(роздільники: `|`, `×`, `/`, `for`, `in`) або двома полями в Detailed search.
 
-Якщо недоступне жодне з двох — `fetch_aact` повертає `None`, і пайплайн
-продовжує роботу без цього джерела. Перший успішний результат кешується
-(`sources/cache.py`), тож навіть короткий збій живої БД під час демо не зламає
-показ — далі піде з кешу. (AACT не значиться в переліку джерел самого ТЗ, але
-це той самий датасет
-ClinicalTrials.gov в агрегованому вигляді, а не нове джерело.)
+## Як це працює
 
-## Жорсткі обмеження скоупу
+```
+collect_sources() -> scientific_agent -> clinical_agent -> commercial_agent
+                  -> детермінована фінансова модель (rNPV) -> chair_agent
+```
 
-Без автентифікації, без бази даних, без Docker. Один happy path: Indication +
-Mechanism на вході → один повний звіт на виході. Систему тестувати мінімум на
-3 різнотипних парах indication/mechanism (одна — складний/рідкісний кейс) —
-промпти параметризуються через Indication/Mechanism, у коді немає розгалужень
-по конкретній хворобі.
+- **Агенти** (`agents/`) працюють послідовно: висновок одного виміру —
+  вхід наступного. Голова комітету додає вердикт, ризики, капітал, unknowns
+  і diligence questions; він ніколи не перетворює inference на evidence.
+- **Evidence перевіряється кодом, а не довірою до LLM** (`agents/base.py`):
+  evidence-claim приймається, лише якщо посилається на реально отримане
+  джерело і його цитата дослівно є в тексті цього джерела.
+- **LLM** (`llm.py`): ChatGPT → Gemini → Claude з автоматичним fallback,
+  дисковий кеш відповідей (повторний запит не витрачає токени).
+- **Картки** будуються детерміновано без LLM (`cards.py`, `card_tables.py`).
+- **Assistant** (`assistant.py`) відповідає лише на основі завантаженого звіту
+  та живих запитів до підключених баз — не з власних знань моделі.
+- Кожен запуск пише JSON-трейс у `data/reports/` (джерела, claims, вартість).
 
-## Критерії готовності до демо
+## Джерела
 
-- [ ] Indication + Mechanism на вході → повний звіт на виході без ручного втручання
-- [ ] Усі 10 обов'язкових секцій звіту присутні, включно з Critical Unknowns і Diligence Questions
-- [ ] Кожен claim позначений evidence/inference, кожен evidence має клікабельне джерело
-- [ ] UI дозволяє drill-down Recommendation → Claims → Evidence → Sources
-- [ ] Протестовано на 3+ різних парах, одна — складний/рідкісний кейс
-- [ ] Є кешовані відповіді для пари, яку показуватимете наживо
-- [ ] Записане відео-демо як запасний варіант
-- [ ] Є приклад, де нові/суперечливі дані змінюють вердикт системи (вимога фінального демо з ТЗ)
-- [ ] Кожен топ-ризик має явну ймовірність і вплив на rNPV
-- [ ] Вердикт явно посилається на найважливіший ризик, коли його ймовірність і вплив високі
-- [ ] Показано approximate cost per run і JSON-трейс запуску
+| Джерело | Що дає |
+|---|---|
+| PubMed | наукові публікації за 8 дослідницькими напрямами |
+| Open Targets | асоціація мішень–хвороба, відомі препарати, профілі (мішені, модальність, стадія) |
+| ClinicalTrials.gov | дослідження, фази, статуси, препарати-інтервенції |
+| AACT | агрегована база ClinicalTrials.gov (Postgres або flat-файли в `data/aact/`) |
+| openFDA Drugs@FDA | схвалення, спонсори, designations (Orphan, Priority Review) |
+| FDA Orange Book | патенти США з датами закінчення та регуляторні ексклюзивності |
+| Lens.org | патентні заявки по світу (потрібен `LENS_API_TOKEN`) |
+| SEC EDGAR | 8-K filings компаній (активність, не sentiment) |
+| `data/market_data.csv` | епідеміологія та ціни (ручні, позначені як неверифіковані) |
+
+Будь-яке недоступне джерело просто пропускається — пайплайн продовжує роботу.
+Для бектестів (`run_pipeline(..., cutoff_date=...)`) знімки «на сьогодні»
+(профілі препаратів, Orange Book) вимикаються, щоб не підглядати в майбутнє.
+
+## Структура
+
+```
+.
+├── server.py              # Flask: веб-UI + /api/evaluate, /api/assistant
+├── pipeline.py            # оркестрація + JSON-трейс
+├── assistant.py           # чат-асистент, заземлений на дані
+├── cards.py               # 10 карток: які секції/джерела куди
+├── card_tables.py         # таблиці/графіки карток (без LLM)
+├── raw_data.py            # список конкурентів, валідні джерела
+├── schema.py              # Claim: evidence/inference + секції
+├── financials.py          # детермінований rNPV і капітал
+├── market_model.py        # ринкова модель
+├── llm.py                 # провайдери LLM, кеш, облік токенів
+├── agents/                # scientific, clinical, commercial, chair
+├── sources/               # фетчери всіх джерел
+├── web/                   # index.html, app.js, style.css
+├── tests/                 # офлайн-тести фінмоделі та ризиків
+└── data/                  # market_data.csv, aact/, reports/
+```
+
+## Тести
+
+```bash
+python -m tests.test_financials
+python -m unittest tests.test_structured_risks
+```
+
+Обидва офлайн: без мережі й без витрат токенів.

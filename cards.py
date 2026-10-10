@@ -1,14 +1,12 @@
 """The site's 10 intelligence cards — the view model behind the card grid.
 
-The claim taxonomy in schema.py follows the task brief's "Required Output" list
-verbatim, and report.py renders the markdown report in exactly that shape (a
-graded deliverable — it is not changed here). The *site* presents the same
-material as topic cards instead, so this module is the single place that maps
-brief sections and fetched source records onto what the UI shows.
+The claim taxonomy in schema.py follows the task brief's "Required Output"
+list; the site presents that material as topic cards, and this module is the
+single place that maps claim sections and fetched source records onto them.
 
 Each card declares where its content comes from:
   claim_sections — schema.SECTION_TITLES keys whose claims land in this card
-  raw_sources    — raw_data.SOURCE_ORDER keys whose fetched records land here
+  raw_sources    — pipeline.collect_sources() keys whose fetched records land here
 
 A card with neither has no connected source yet (we fetch nothing that answers
 it — e.g. litigation records). The UI says exactly that instead of "No results

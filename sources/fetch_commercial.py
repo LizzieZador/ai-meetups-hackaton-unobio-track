@@ -89,20 +89,6 @@ def _parse_year(val: Any) -> Optional[int]:
     return None
 
 
-def get_epidemiology_from_csv(indication_query: str) -> Optional[dict]:
-    """Legacy helper: return raw CSV row if Indication matches substring."""
-    if not CSV_PATH.exists():
-        return None
-
-    query = indication_query.lower()
-    with open(CSV_PATH, encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
-            name = row.get("Indication", "").lower()
-            if name in query or query in name:
-                return row
-    return None
-
-
 def get_epidemiology(indication: str, cutoff_date: Optional[str] = None) -> Optional[dict]:
     """Look up epidemiology data for an indication.
 
@@ -318,45 +304,6 @@ def fetch_commercial(indication: str) -> Optional[list[dict]]:
         })
 
     return records if records else None
-
-
-def run_commercial_analysis(indication: str, target: str) -> Optional[dict]:
-    """Legacy helper for test_local_run.py: epidemiology claims + naive financial metrics."""
-    row = get_epidemiology_from_csv(indication)
-    if row is None:
-        return None
-
-    today = datetime.date.today().isoformat()
-    try:
-        incidence = int(row.get("Incidence_Annual_US_EU", 0))
-    except (ValueError, TypeError):
-        incidence = 0
-    try:
-        cost = int(row.get("Avg_Annual_Treatment_Cost_USD", 0))
-    except (ValueError, TypeError):
-        cost = 0
-
-    scenarios = {
-        "peak_sales_low": 0.05,
-        "peak_sales_base": 0.10,
-        "peak_sales_high": 0.20,
-    }
-    return {
-        "claims": [{
-            "claim": (
-                f"{row.get('Indication')}: prevalence {row.get('Prevalence_US_EU')} and annual "
-                f"incidence {row.get('Incidence_Annual_US_EU')} in US+EU."
-            ),
-            "type": "evidence",
-            "section": "commercial_opportunity",
-            "source": row.get("Primary_Epidemiology_Source", "Market Data CSV"),
-            "date_accessed": today,
-        }],
-        "financial_metrics": {
-            **{k: round(incidence * share * cost / 1e6) for k, share in scenarios.items()},
-            "currency": "USD_millions",
-        },
-    }
 
 
 def collect_commercial_sources(

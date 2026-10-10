@@ -7,10 +7,7 @@ Owner: Scientific Analyst (+ Commercial Analyst — known drugs = competitors).
 """
 import datetime
 import json
-import os
-import re
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 

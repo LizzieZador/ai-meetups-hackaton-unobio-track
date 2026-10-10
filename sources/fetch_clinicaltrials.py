@@ -142,13 +142,3 @@ def _fetch(params: dict) -> Optional[list[dict]]:
         return results
     except requests.RequestException:
         return None
-
-
-if __name__ == "__main__":
-    import sys
-
-    cond = sys.argv[1] if len(sys.argv) > 1 else "NSCLC"
-    intr = sys.argv[2] if len(sys.argv) > 2 else "pembrolizumab"
-    stat = sys.argv[3] if len(sys.argv) > 3 else None
-    trials = fetch_clinicaltrials(cond, intr, max_results=3, status_filter=stat)
-    print(json.dumps(trials, indent=2))

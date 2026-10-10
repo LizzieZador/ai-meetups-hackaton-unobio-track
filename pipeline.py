@@ -1,12 +1,11 @@
 """Orchestration — plain Python functions, no agent framework.
 
 collect_sources() -> scientific_agent() -> clinical_agent() -> commercial_agent()
-                   -> chair_agent() -> render_report()
+                   -> deterministic financials -> chair_agent()
 
 Every run also writes a JSON trace to data/reports/ — indication, mechanism,
-raw sources, every claim, and model/API usage + approximate cost — so the
-pipeline is reproducible and auditable (the "Reproducible Pipeline" Required
-Deliverable: architecture, source attribution, model/API usage, cost, logs/traces).
+raw sources, every claim, and model/API usage + approximate cost — so each
+evaluation is reproducible and auditable.
 """
 import datetime
 import json
@@ -18,11 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# BUG FIX: on Windows, stdout defaults to the system codepage (cp1251/cp1252),
-# which can't encode e.g. Greek letters an LLM writes freely in scientific
-# text ("β-secretase" for BACE1) — any print() of model-generated text then
-# raises UnicodeEncodeError. Every entry point (server.py, main.py) imports
-# this module first, so reconfiguring stdout once here covers all of them.
+# On Windows stdout defaults to the system codepage, which can't encode e.g.
+# the Greek letters an LLM writes in scientific text ("β-secretase") — any
+# print() of model output would raise UnicodeEncodeError.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -34,9 +31,7 @@ from agents.commercial_agent import commercial_agent
 from agents.scientific_agent import collect_scientific_sources, scientific_agent
 from financials import FinancialResult, run_deterministic_financials
 from llm import get_usage_summary, reset_usage_log
-from quick_summary import build_quick_summary, render_quick_summary_markdown
-from raw_data import collect_valid_sources, extract_analogs, render_raw_data_markdown
-from report import render_report
+from raw_data import collect_valid_sources, extract_analogs
 from schema import Claim, get_dropped_claims_log, reset_dropped_claims_log, log_dropped_claim
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
@@ -180,10 +175,8 @@ def run_pipeline(
     Targets/ClinicalTrials.gov/AACT), so this never changes what's found, only
     whether two spellings of the same term share one cache entry and one set of
     LLM calls instead of two independent (and not necessarily identical) ones.
-    This local reassignment doesn't affect the caller's own variables, so
-    callers that build a report title from their original indication/mechanism
-    (run_pipeline_markdown, the web UI's `query`) still show whatever case the
-    user actually typed.
+    The caller's own variables are untouched, so the web UI still shows
+    whatever case the user actually typed.
     """
     indication = indication.strip().lower()
     mechanism = mechanism.strip().lower()
@@ -283,33 +276,6 @@ def _safe_agent_call(name: str, fn, *args, **kwargs) -> list[Claim]:
         print(f"[Pipeline Warning] {name} failed: {e}")
         log_dropped_claim(name, None, f"Agent call failed with exception: {e}")
         return []
-
-
-def run_pipeline_markdown(
-    indication: str,
-    mechanism: str,
-    extra_context: str = "",
-    cutoff_date: Optional[str] = None,
-) -> str:
-    """Convenience wrapper for callers (CLI) that just want the rendered report."""
-    claims, cost_summary, sources = run_pipeline(
-        indication=indication,
-        mechanism=mechanism,
-        extra_context=extra_context,
-        cutoff_date=cutoff_date,
-    )
-
-    cost_line = (
-        f"Pipeline cost for this run: ~${cost_summary['approx_cost_usd']} "
-        f"({cost_summary['calls']} calls, {cost_summary['model']}, "
-        f"{cost_summary['input_tokens']} in / {cost_summary['output_tokens']} out tokens)"
-    )
-    return render_report(
-        indication=indication,
-        mechanism=mechanism,
-        claims=claims,
-        cost_summary=cost_line,
-    )
 
 
 def _write_trace(

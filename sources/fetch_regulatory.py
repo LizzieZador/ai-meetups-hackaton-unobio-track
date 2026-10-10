@@ -7,11 +7,8 @@ precedent for drugs that already share this program's target (the analog
 list Open Targets returns) — i.e. "has the FDA already rewarded this
 mechanism class with an expedited pathway."
 
-Distinct from sources/fetch_openfda.py (Lizzie's bulk full-dataset downloader,
-built for offline mirroring of the entire openFDA catalog) — this module makes
-small, targeted per-drug-name queries against the same public API and needs no
-key, matching the rest of this package's live-fetch pattern (fetch_pubmed.py,
-fetch_clinicaltrials.py, ...).
+Small, targeted per-drug-name queries against the public API — no key
+needed, same live-fetch pattern as the rest of this package.
 """
 import datetime
 import hashlib
@@ -163,10 +160,3 @@ def _build_record(name: str, app: dict, today: str) -> Optional[dict]:
         "date_accessed": today,
         "raw_snippet": snippet,
     }
-
-
-if __name__ == "__main__":
-    import sys
-
-    names = sys.argv[1:] or ["sotorasib"]
-    print(json.dumps(fetch_regulatory_signals(names), indent=2))

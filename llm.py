@@ -399,16 +399,6 @@ def _real_key(name: str) -> str:
     return "" if not value or value.endswith("...") else value
 
 
-def active_model() -> str:
-    """Name of the model ask_claude_json() will try FIRST right now (for UI/diagnostics).
-    Actual calls may still fall through to a later provider if this one fails."""
-    if _real_key("TEAM_API_KEY"):
-        return MODEL_OPENAI
-    if _real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY"):
-        return MODEL_GEMINI
-    return MODEL_ANTHROPIC
-
-
 def _cache_path(system_prompt: str, user_prompt: str) -> Path:
     digest = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8")).hexdigest()[:24]
     return CACHE_DIR / f"llm_{digest}.json"

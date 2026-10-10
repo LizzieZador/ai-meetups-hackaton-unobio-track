@@ -1,5 +1,4 @@
 """Unit test for deterministic financial modeling engine (financials.py) and Chair Agent integration."""
-import re
 from unittest.mock import patch
 from schema import Claim
 from financials import (
@@ -7,11 +6,10 @@ from financials import (
     extract_enrollment_from_aact,
     extract_ptrs_parameters,
     extract_peak_sales,
-    run_deterministic_financials,
     build_deterministic_financial_claims,
     format_financial_brief_for_chair,
 )
-from agents.chair_agent import chair_agent, _enforce_deterministic_financials
+from agents.chair_agent import chair_agent
 
 
 def test_financials_suite():
