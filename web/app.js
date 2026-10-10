@@ -775,17 +775,16 @@ document.querySelectorAll(".panel-toggle").forEach((btn) => {
   };
 });
 
-(function initSidebarResizer() {
-  const resizer = $("sidebar-resizer");
-  const historyPanel = $("history-panel");
+// A horizontal drag handle that sets `target`'s height, clamped to
+// [min, maxFn()]. Used for both dividers: Searches / Assistant, and the chat
+// list / open chat inside the Assistant panel.
+function makeResizer(resizer, target, min, maxFn) {
   let startY = 0;
   let startHeight = 0;
-
   function onMove(e) {
-    const sidebarRect = $("sidebar").getBoundingClientRect();
-    const maxHeight = sidebarRect.height - MIN_PANEL_HEIGHT - resizer.getBoundingClientRect().height - 40;
-    const newHeight = Math.min(Math.max(startHeight + (e.clientY - startY), MIN_PANEL_HEIGHT), Math.max(MIN_PANEL_HEIGHT, maxHeight));
-    historyPanel.style.height = `${newHeight}px`;
+    const height = Math.min(Math.max(startHeight + (e.clientY - startY), min), Math.max(min, maxFn()));
+    target.style.height = `${height}px`;
+    target.style.maxHeight = "none";
   }
   function onUp() {
     document.removeEventListener("mousemove", onMove);
@@ -796,12 +795,32 @@ document.querySelectorAll(".panel-toggle").forEach((btn) => {
     if (resizer.classList.contains("disabled")) return;
     e.preventDefault();
     startY = e.clientY;
-    startHeight = historyPanel.getBoundingClientRect().height;
+    startHeight = target.getBoundingClientRect().height;
     resizer.classList.add("dragging");
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   });
-})();
+}
+
+makeResizer($("sidebar-resizer"), $("history-panel"), MIN_PANEL_HEIGHT, () =>
+  $("sidebar").getBoundingClientRect().height - MIN_PANEL_HEIGHT - $("sidebar-resizer").getBoundingClientRect().height - 40
+);
+
+// The chat list can grow until only room for the message box and a few lines
+// of the open chat is left below it.
+const MIN_CHAT_LOG_HEIGHT = 90;
+makeResizer($("chat-resizer"), $("assistant-chats"), 28, () => {
+  const body = $("assistant-panel").querySelector(".panel-body").getBoundingClientRect();
+  const list = $("assistant-chats").getBoundingClientRect();
+  const form = $("assistant-form").getBoundingClientRect();
+  return body.bottom - list.top - form.height - $("chat-resizer").getBoundingClientRect().height - MIN_CHAT_LOG_HEIGHT - 24;
+});
+
+$("chat-history-toggle").onclick = () => {
+  const collapsed = $("chat-history").classList.toggle("collapsed");
+  $("chat-history-toggle").setAttribute("aria-expanded", String(!collapsed));
+  $("chat-resizer").classList.toggle("disabled", collapsed);
+};
 
 $("modal-close").onclick = closeModal;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };

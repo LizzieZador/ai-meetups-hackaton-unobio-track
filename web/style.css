@@ -205,12 +205,22 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .assistant-msg .who { display:block; font-size:11px; font-weight:700; letter-spacing:.03em;
                       text-transform:uppercase; color:var(--muted); margin-bottom:2px; }
 .assistant-msg.note { color:var(--muted); font-style:italic; }
-.chat-history { flex:none; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+.chat-history { flex:none; display:flex; flex-direction:column; min-height:0; }
 .chat-history-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.chat-history-toggle { display:flex; align-items:center; gap:5px; background:none; border:0; padding:0; cursor:pointer; color:var(--muted); }
+.chat-history-toggle:hover, .chat-history-toggle:hover .chat-history-title { color:var(--text); }
+.chat-history-toggle .chevron { transition:transform .15s; }
+.chat-history-toggle[aria-expanded="false"] .chevron { transform:rotate(-90deg); }
 .chat-history-title { font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }
+.chat-history.collapsed .chat-list { display:none; }
+.chat-history.collapsed .chat-history-head { margin-bottom:0; }
+/* the divider between the chat list and the open chat — same drag handle as
+   the Searches/Assistant one, but flush with the panel's own padding */
+.chat-resizer { margin:4px 0 8px; }
+.chat-resizer::after { left:0; right:0; }
 .chat-new { background:none; border:1px solid var(--line); color:var(--accent); border-radius:5px; padding:3px 8px; font-size:12px; font-weight:600; cursor:pointer; }
 .chat-new:hover { border-color:var(--accent); }
-.chat-list { list-style:none; margin:0; padding:0; max-height:116px; overflow-y:auto; }
+.chat-list { list-style:none; margin:0; padding:0; max-height:116px; min-height:28px; overflow-y:auto; }
 .chat-list li { position:relative; padding:6px 26px 6px 8px; border-radius:6px; cursor:pointer; }
 .chat-list li:not(.empty-item):hover { background:var(--bg); }
 .chat-list li.active { background:var(--tint); }
