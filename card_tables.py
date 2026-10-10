@@ -53,12 +53,19 @@ _TPP_KEYWORDS = ("target product profile", "differentiat", "profile", "positioni
 
 def build_unmet_need_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     pool = _claims(claims_by_section, "human_translation_thesis", "commercial_opportunity")
+    # The 3 keyword sets aren't mutually exclusive (e.g. a claim can mention
+    # both "standard of care" and "unmet need") — track which claims have
+    # already been placed in an earlier row so the same sentence is never
+    # shown twice under two different Points.
+    used: set[int] = set()
 
     def bucket(keywords: tuple[str, ...]) -> str:
-        matches = [c for c in pool if any(k in c.claim.lower() for k in keywords)]
+        matches = [c for c in pool if id(c) not in used and any(k in c.claim.lower() for k in keywords)]
         if not matches:
             return NA
-        return " ".join(c.claim.strip().rstrip(".") + "." for c in matches[:2])
+        selected = matches[:2]
+        used.update(id(c) for c in selected)
+        return " ".join(c.claim.strip().rstrip(".") + "." for c in selected)
 
     rows = [
         {"Point": "Current Standard of Care", "Content": bucket(_SOC_KEYWORDS)},
@@ -89,7 +96,11 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
     if not records:
         return {"view": "graph", "chart": None}
 
-    counts = Counter(_clean_filer_name(r.get("company")) for r in records)
+    by_name: dict[str, list[dict]] = {}
+    for r in records:
+        by_name.setdefault(_clean_filer_name(r.get("company")), []).append(r)
+
+    counts = Counter({name: len(recs) for name, recs in by_name.items()})
     top = counts.most_common(6)
     total = sum(n for _, n in top) or 1
 
@@ -98,6 +109,25 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
     # there's no live JS function to compute it client-side.
     labels = [
         f"{name} — {n} filing{'s' if n != 1 else ''} ({round(n / total * 100)}%)"
+        for name, n in top
+    ]
+
+    # One entry per slice, same order as the chart's data — the front-end
+    # looks this up by clicked slice index to show a real summary + the
+    # actual filing records backing it (clicking a chart element only gives
+    # Chart.js an index, so this has to be a plain parallel list, not keyed).
+    chart_details = [
+        {
+            "label": name,
+            "summary": (
+                f"{n} SEC 8-K filing{'s' if n != 1 else ''} from {name} mentioned this program "
+                f"({round(n / total * 100)}% of the filing activity shown in this chart)."
+            ),
+            "sources": [
+                {"source": r.get("source"), "url": r.get("url"), "date_accessed": r.get("date_accessed")}
+                for r in by_name[name]
+            ],
+        }
         for name, n in top
     ]
 
@@ -130,7 +160,7 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
             },
         },
     }
-    return {"view": "graph", "chart": chart}
+    return {"view": "graph", "chart": chart, "chart_details": chart_details}
 
 
 # ---------------------------------------------------------------------------
@@ -171,24 +201,53 @@ def build_scientific_evidence_view(claims_by_section: dict, sources: dict, analo
 
 
 # ---------------------------------------------------------------------------
-# Card 4 — Patient population, treatment dynamics & TAM: no table/graph
-# (the underlying epidemiology CSV is still unverified — see data_gap_note in
-# cards.py), but per mentor feedback the commercial_opportunity list should
-# favor real evidence over inference. This stays "view": "list" — it only
-# reorders/caps the same items cards.py already builds for this card, moving
-# every evidence claim/raw record ahead of inference claims and keeping at
-# most 3 of the inference ones. Nothing is dropped from the underlying data,
-# only from what's displayed first (and how much inference piles up).
+# Card 4 — Patient population, treatment dynamics & TAM: no table/graph (the
+# underlying epidemiology CSV is still unverified — see data_gap_note in
+# cards.py), but per mentor feedback this list should favor real,
+# database-backed evidence over inference, and show much less of the latter:
+#   1. Every evidence-type item first — raw "commercial" CSV records, plus
+#      any evidence-type commercial_opportunity claims, PLUS real
+#      population/epidemiology evidence claims pulled in from
+#      scientific_thesis (PubMed-backed facts about mutation rate, incidence,
+#      prevalence, etc.) — a different section's claims, but genuinely about
+#      this card's own topic, and real evidence our databases produced,
+#      which is exactly what was asked for: more database-backed evidence
+#      on this specific card, not invented content.
+#   2. Boilerplate "Deterministic market model parameter assumption for X."
+#      claims (financials.py's internal bookkeeping of which inputs it used —
+#      not an analytical statement) are dropped outright, never counted as
+#      displayed inference.
+#   3. Of what's left, only the single most substantive inference claim is
+#      kept (the longest one — the generic one-line assumption claims are a
+#      handful of words; the real funnel/peak-sales estimate is a full
+#      sentence, so length is a simple, reliable way to prefer it).
 # ---------------------------------------------------------------------------
-_MAX_INFERENCE_ITEMS = 3
+_MAX_INFERENCE_ITEMS = 1
+_BOILERPLATE_ASSUMPTION = re.compile(r"^deterministic market model parameter assumption for", re.I)
+_POPULATION_KEYWORDS = (
+    "prevalence", "incidence", "patient", "population", "mutation rate", "affect",
+    "frequency", "epidemiolog", "diagnosed", "cases per",
+)
 
 
 def build_patient_population_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
-    claim_items = [{"kind": "claim", **c.to_dict()} for c in claims_by_section.get("commercial_opportunity", [])]
+    commercial_claims = claims_by_section.get("commercial_opportunity", [])
+    population_evidence = [
+        c for c in claims_by_section.get("scientific_thesis", [])
+        if c.type == "evidence" and any(k in c.claim.lower() for k in _POPULATION_KEYWORDS)
+    ]
+
+    claim_items = [{"kind": "claim", **c.to_dict()} for c in commercial_claims + population_evidence]
     record_items = [{"kind": "record", **r} for r in sources.get("commercial", [])]
 
     non_inference = record_items + [i for i in claim_items if i.get("type") != "inference"]
-    inference = [i for i in claim_items if i.get("type") == "inference"][:_MAX_INFERENCE_ITEMS]
+
+    inference_items = [
+        i for i in claim_items
+        if i.get("type") == "inference" and not _BOILERPLATE_ASSUMPTION.match(i.get("claim") or "")
+    ]
+    inference_items.sort(key=lambda i: len(i.get("claim") or ""), reverse=True)
+    inference = inference_items[:_MAX_INFERENCE_ITEMS]
 
     return {"view": "list", "items": non_inference + inference}
 

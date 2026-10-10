@@ -1,8 +1,10 @@
 """Web UI backend — serves the static front-end in web/ and exposes the pipeline as JSON.
 
 GET  /              -> web/index.html (search sidebar + the 12-card grid)
-POST /api/evaluate  -> {"indication": "...", "mechanism": "..."} OR {"query": "mechanism | indication"}
-                       -> {verdict, cards, cost}
+POST /api/evaluate   -> {"indication": "...", "mechanism": "..."} OR {"query": "mechanism | indication"}
+                        -> {verdict, cards, cost}
+POST /api/assistant   -> {"message": "...", "history": [...], "report": <loaded report | null>}
+                        -> {"reply": "...", "search": {"mechanism","indication"} | None}
 
 Card layout and the mapping from claim sections / fetched sources onto cards
 lives in cards.py; this module only turns a query into one pipeline run.
@@ -14,6 +16,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+from assistant import ask_assistant
 from cards import build_cards
 from pipeline import run_pipeline
 from raw_data import extract_analogs
@@ -80,6 +83,20 @@ def evaluate():
     except Exception as e:  # surface API-key / network problems to the UI instead of a 500 page
         return jsonify(error=f"Pipeline failed: {e}"), 500
     return jsonify(build_report(indication, mechanism, claims, cost, sources))
+
+
+@app.post("/api/assistant")
+def assistant():
+    body = request.get_json(silent=True) or {}
+    message = (body.get("message") or "").strip()
+    if not message:
+        return jsonify(error="Message is required."), 400
+    history = body.get("history") or []
+    report = body.get("report")
+    try:
+        return jsonify(ask_assistant(message, history, report))
+    except Exception as e:  # surface API-key / network problems to the chat instead of a 500 page
+        return jsonify(error=f"Assistant failed: {e}"), 500
 
 
 if __name__ == "__main__":

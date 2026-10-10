@@ -207,8 +207,54 @@ function sourcesLabel(card) {
 }
 
 const chartInstances = {};
+let chartPopup = null;
 
-function mountChart(canvasId, chartConfig) {
+function closeChartPopup() {
+  if (chartPopup) {
+    chartPopup.remove();
+    chartPopup = null;
+  }
+}
+
+// Positioned below (or, if there's no room, above) the chart's own canvas —
+// never over it — and clamped horizontally into the viewport. Scrolling
+// inside it is just ordinary overflow, no extra JS needed.
+function openChartPopup(canvas, clickX, title, summary, sources) {
+  closeChartPopup();
+  const div = document.createElement("div");
+  div.className = "chart-popup";
+  div.innerHTML = `
+    <button type="button" class="chart-popup-close" aria-label="Close">&times;</button>
+    <h4>${esc(title)}</h4>
+    <p>${esc(summary)}</p>
+    ${
+      sources.length
+        ? `<ul>${sources
+            .map((s) => `<li>${link(s.source, s.url)}${s.date_accessed ? ` <span class="meta">${esc(s.date_accessed)}</span>` : ""}</li>`)
+            .join("")}</ul>`
+        : ""
+    }`;
+  document.body.appendChild(div);
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const popupRect = div.getBoundingClientRect();
+  let left = Math.min(Math.max(clickX - popupRect.width / 2, 10), window.innerWidth - popupRect.width - 10);
+  let top = canvasRect.bottom + 8;
+  if (top + popupRect.height > window.innerHeight - 10) {
+    top = Math.max(10, canvasRect.top - popupRect.height - 8);
+  }
+  div.style.left = `${left}px`;
+  div.style.top = `${top}px`;
+
+  div.querySelector(".chart-popup-close").onclick = closeChartPopup;
+  chartPopup = div;
+}
+
+document.addEventListener("click", (e) => {
+  if (chartPopup && !chartPopup.contains(e.target) && e.target.tagName !== "CANVAS") closeChartPopup();
+});
+
+function mountChart(canvasId, chartConfig, details) {
   if (chartInstances[canvasId]) {
     chartInstances[canvasId].destroy();
     delete chartInstances[canvasId];
@@ -223,7 +269,20 @@ function mountChart(canvasId, chartConfig) {
       '<p class="placeholder">Chart library failed to load (check network/ad blocker) — raw data is still listed under Sources below.</p>';
     return;
   }
-  chartInstances[canvasId] = new Chart(canvas, chartConfig);
+  // Cloned so each mount gets its own options object — mutating it below to
+  // add onClick must never leak back into the shared report data (the same
+  // chart config is reused for the grid canvas and, separately, the modal one).
+  const config = JSON.parse(JSON.stringify(chartConfig));
+  if (details && details.length) {
+    config.options = config.options || {};
+    config.options.onClick = (evt, elements) => {
+      if (!elements.length) return;
+      const d = details[elements[0].index];
+      if (!d) return;
+      openChartPopup(canvas, evt.native.clientX, d.label, d.summary, d.sources || []);
+    };
+  }
+  chartInstances[canvasId] = new Chart(canvas, config);
 }
 
 function renderCard(card) {
@@ -258,7 +317,7 @@ function openCard(card) {
   $("modal").classList.remove("hidden");
   $("modal-close").focus();
   if (card.view === "graph" && card.chart) {
-    mountChart(`chart-modal-${card.id}`, card.chart);
+    mountChart(`chart-modal-${card.id}`, card.chart, card.chart_details);
   }
 }
 
@@ -292,7 +351,7 @@ function show(report) {
   });
   report.cards
     .filter((card) => card.view === "graph" && card.chart)
-    .forEach((card) => mountChart(`chart-grid-${card.id}`, card.chart));
+    .forEach((card) => mountChart(`chart-grid-${card.id}`, card.chart, card.chart_details));
   if (hasReasoning) {
     const wrap = $("content").querySelector(".verdict-wrap");
     wrap.querySelector(".verdict").onclick = () => wrap.classList.toggle("pinned");
@@ -374,10 +433,12 @@ $("modal-close").onclick = closeModal;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
-/* Assistant panel — input + send shell for the helper model.
-   The model is not wired up yet: a sent message is logged with a note saying so,
-   so the control is never silently dead. Wiring it means replacing the note
-   below with a call to an /api/assistant endpoint. */
+/* Assistant panel — explains the UI/cards, answers questions about the
+   report currently on screen (grounded server-side in that exact report
+   JSON — see assistant.py — never free-invented), and can propose a new
+   search, which the user runs with one click rather than it firing silently. */
+let assistantHistory = []; // [{role: "user"|"assistant", text}], capped server-side too
+
 function appendAssistantMsg(who, text, cls) {
   const log = $("assistant-log");
   log.classList.remove("hidden");
@@ -386,20 +447,58 @@ function appendAssistantMsg(who, text, cls) {
   div.innerHTML = `<span class="who">${esc(who)}</span>${esc(text)}`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+function appendAssistantSearch(search) {
+  const log = $("assistant-log");
+  const div = document.createElement("div");
+  div.className = "assistant-msg assistant-search";
+  div.innerHTML = `<span class="who">Suggested search</span>
+    <span class="assistant-search-terms">${esc(search.mechanism)} <span class="label">in</span> ${esc(search.indication)}</span>
+    <button type="button" class="assistant-search-run">Run this search</button>`;
+  div.querySelector(".assistant-search-run").onclick = () => {
+    setSearchMode("detailed");
+    $("indication").value = search.indication;
+    $("mechanism").value = search.mechanism;
+    updateEvaluateEnabled();
+    evaluate({ indication: search.indication, mechanism: search.mechanism });
+  };
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
 }
 
 function updateAssistantSendEnabled() {
   $("assistant-send").disabled = !$("assistant-input").value.trim();
 }
 
-$("assistant-form").onsubmit = (e) => {
+$("assistant-form").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("assistant-input").value.trim();
   if (!text) return;
   appendAssistantMsg("You", text);
   $("assistant-input").value = "";
   updateAssistantSendEnabled();
-  appendAssistantMsg("Assistant", "Not connected to the model yet — this window only takes the message for now.", "note");
+  $("assistant-send").disabled = true;
+  const pending = appendAssistantMsg("Assistant", "…", "note");
+  try {
+    const res = await fetch("/api/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, history: assistantHistory, report: current }),
+    });
+    const data = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
+    pending.remove();
+    if (!res.ok || data.error) throw new Error(data.error || `Server error (${res.status})`);
+    appendAssistantMsg("Assistant", data.reply);
+    assistantHistory = [...assistantHistory, { role: "user", text }, { role: "assistant", text: data.reply }].slice(-12);
+    if (data.search) appendAssistantSearch(data.search);
+  } catch (err) {
+    pending.remove();
+    appendAssistantMsg("Assistant", err.message, "note");
+  } finally {
+    updateAssistantSendEnabled();
+  }
 };
 $("assistant-input").oninput = updateAssistantSendEnabled;
 

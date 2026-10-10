@@ -244,6 +244,124 @@ def _ask_claude(system_prompt: str, user_prompt: str, max_tokens: int = 3000) ->
         return []
 
 
+def _ask_openai_text(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
+    client = _get_openai_client(api_key)
+    response = client.chat.completions.create(
+        model=MODEL_OPENAI,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_completion_tokens=max_tokens,
+    )
+    usage = response.usage
+    _usage_log.append({
+        "model": MODEL_OPENAI,
+        "input_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
+        "output_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
+    })
+    return response.choices[0].message.content or ""
+
+
+def _ask_gemini_text(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
+    """Same Gemini-candidate/retry logic as _ask_gemini(), but plain text out
+    (no responseMimeType=json) — for the conversational Assistant, not claims."""
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
+    headers = {"x-goog-api-key": api_key}
+    last_error = "no response"
+
+    for model in dict.fromkeys(GEMINI_CANDIDATES):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        for attempt in range(GEMINI_MAX_ATTEMPTS):
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            except requests.RequestException as e:
+                last_error = f"{model}: {e}"
+                time.sleep(2 * (attempt + 1))
+                continue
+            if resp.status_code == 200:
+                data = resp.json()
+                usage = data.get("usageMetadata", {})
+                _usage_log.append({
+                    "model": model,
+                    "input_tokens": usage.get("promptTokenCount", 0),
+                    "output_tokens": usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0),
+                })
+                try:
+                    cand = data["candidates"][0]
+                    return "".join(p.get("text", "") for p in cand["content"]["parts"] if not p.get("thought"))
+                except (KeyError, IndexError):
+                    return ""
+            try:
+                detail = resp.json()["error"]["message"]
+            except (ValueError, KeyError, TypeError):
+                detail = resp.text[:200]
+            last_error = f"{model} HTTP {resp.status_code}: {detail}"
+            print(f"[LLM Warning] {last_error}")
+            if resp.status_code == 429 and "quota" in detail.lower():
+                break
+            if resp.status_code in (429, 500, 503):
+                time.sleep(3 * (attempt + 1))
+                continue
+            break
+    raise RuntimeError(f"Gemini request failed ({last_error})")
+
+
+def _ask_claude_text(system_prompt: str, user_prompt: str, max_tokens: int) -> str:
+    client = _get_anthropic_client()
+    response = client.messages.create(
+        model=MODEL_ANTHROPIC,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    _usage_log.append({
+        "model": MODEL_ANTHROPIC,
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+    })
+    return response.content[0].text
+
+
+def ask_assistant_reply(system_prompt: str, user_prompt: str, max_tokens: int = 700) -> str:
+    """Same ChatGPT -> Gemini -> Claude priority chain as ask_claude_json(), but
+    for a free-text conversational reply (the site's Assistant chat widget) —
+    not a claims array, and not disk-cached (every chat turn is its own
+    conversation, caching by prompt text would return a stale reply to a
+    different follow-up that happens to hash the same)."""
+    openai_key = _real_key("TEAM_API_KEY")
+    gemini_key = _real_key("GEMINI_API_KEY") or _real_key("GOOGLE_API_KEY")
+    claude_key = _real_key("ANTHROPIC_API_KEY")
+
+    if not (openai_key or gemini_key or claude_key):
+        raise RuntimeError(
+            "No LLM key configured: set TEAM_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY in .env"
+        )
+
+    if openai_key:
+        try:
+            return _ask_openai_text(openai_key, system_prompt, user_prompt, max_tokens)
+        except Exception as e:
+            print(f"[LLM Warning] ChatGPT gateway failed ({e}); falling back to Gemini/Claude")
+
+    if gemini_key:
+        try:
+            return _ask_gemini_text(gemini_key, system_prompt, user_prompt, max_tokens)
+        except RuntimeError as e:
+            if not claude_key:
+                raise
+            print(f"[LLM Warning] Gemini failed ({e}); falling back to Claude")
+
+    if claude_key:
+        return _ask_claude_text(system_prompt, user_prompt, max_tokens)
+
+    raise RuntimeError("All configured LLM providers failed for this request")
+
+
 def _real_key(name: str) -> str:
     """Env key, ignoring empty values and the '...' placeholders from .env.example."""
     value = os.environ.get(name, "").strip()
