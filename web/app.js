@@ -542,7 +542,7 @@ function mountChart(canvasId, chartConfig, details) {
 }
 
 function renderCard(card) {
-  return `<article class="card">
+  return `<article class="card" data-card-id="${esc(card.id)}">
     <div class="card-head">
       <div>${cardHeading(card)}</div>
       <button type="button" class="expand" data-card="${esc(card.id)}" title="Expand" aria-label="Expand ${esc(card.title)}">
@@ -576,6 +576,7 @@ function openCard(card) {
     <div class="card-foot">${sourcesLabel(card)}</div>`;
   $("modal-body").querySelector("h2").id = "modal-title";
   $("modal").classList.remove("hidden");
+  openCardId = card.id;
   $("modal-close").focus();
   if (card.view === "graph" && card.chart) {
     mountChart(`chart-modal-${card.id}`, card.chart, card.chart_details);
@@ -585,6 +586,62 @@ function openCard(card) {
 function closeModal() {
   $("modal").classList.add("hidden");
   $("modal-body").innerHTML = "";
+  openCardId = null;
+}
+
+/* What the client is looking at right now — sent with every assistant
+   message, so "this card", "here" or "why this verdict?" resolve to what's
+   actually on screen. Structured state, not a screenshot. */
+let openCardId = null;
+let pendingQuery = null;
+
+function visibleCards() {
+  const box = $("content").getBoundingClientRect();
+  return [...$("content").querySelectorAll(".grid .card")]
+    .filter((el) => {
+      const r = el.getBoundingClientRect();
+      const shown = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+      return shown > Math.min(r.height, box.height) * 0.35;
+    })
+    .map((el) => cardRef(el.dataset.cardId));
+}
+
+function cardRef(id) {
+  const card = current && current.cards.find((c) => c.id === id);
+  return card ? { id: card.id, number: card.number, title: card.title } : { id };
+}
+
+function screenState() {
+  const content = $("content");
+  const state = {
+    page: !$("welcome").classList.contains("hidden")
+      ? "welcome"
+      : content.querySelector(".loading")
+        ? "loading"
+        : content.querySelector(".error")
+          ? "error"
+          : current && content.querySelector(".grid")
+            ? "report"
+            : "empty",
+    search_mode: searchMode,
+    search_inputs:
+      searchMode === "detailed"
+        ? { indication: $("indication").value.trim(), mechanism: $("mechanism").value.trim() }
+        : { query: $("query").value.trim() },
+  };
+  if (state.page === "welcome") state.welcome_input = $("welcome-query").value.trim();
+  if (state.page === "loading") state.evaluating = pendingQuery;
+  if (state.page === "error") state.error = content.querySelector(".error").textContent;
+  if (current) {
+    state.loaded_report = { mechanism: current.mechanism, indication: current.indication, verdict: current.verdict };
+    if (state.page === "report") {
+      state.visible_cards = visibleCards();
+      state.open_card = openCardId ? cardRef(openCardId) : null;
+      state.verdict_reasoning_open = !!content.querySelector(".verdict-wrap.pinned");
+      state.chart_popup = chartPopup ? chartPopup.querySelector("h4").textContent : null;
+    }
+  }
+  return state;
 }
 
 function show(report) {
@@ -632,6 +689,8 @@ document.addEventListener("click", (e) => {
 
 async function evaluate(body) {
   $("evaluate").disabled = true;
+  pendingQuery = body.query || `${body.mechanism} | ${body.indication}`;
+  closeModal();
   $("content").innerHTML = spinnerMarkup("Collecting sources and running the committee… this can take a minute.");
   try {
     const res = await fetch("/api/evaluate", {
@@ -654,6 +713,7 @@ async function evaluate(body) {
   } catch (e) {
     $("content").innerHTML = `<p class="error">${esc(e.message)}</p>`;
   } finally {
+    pendingQuery = null;
     updateEvaluateEnabled();
   }
 }
@@ -773,12 +833,29 @@ function formatAssistantText(text) {
   return out.join("");
 }
 
-function appendAssistantMsg(who, text, cls) {
+// Which of our databases the assistant queried for a reply — shown under it,
+// so it's visible when an answer came from a live lookup vs. the screen.
+const LOOKUP_LABELS = {
+  drugs_for_indication: "drug candidates (Open Targets · FDA · CT.gov)",
+  clinical_trials: "ClinicalTrials.gov",
+  literature: "PubMed",
+  target_disease_evidence: "Open Targets",
+  drug_profile: "Open Targets drug profile",
+  fda_approvals: "FDA approvals",
+  us_patents_exclusivity: "Orange Book",
+  company_filings: "SEC EDGAR",
+  worldwide_patents: "Lens.org",
+};
+
+function appendAssistantMsg(who, text, cls, lookups) {
   const log = $("assistant-log");
   log.classList.remove("hidden");
   const div = document.createElement("div");
   div.className = cls ? `assistant-msg ${cls}` : "assistant-msg";
-  div.innerHTML = `<span class="who">${esc(who)}</span>${formatAssistantText(text)}`;
+  const checked = (lookups || []).map((l) => LOOKUP_LABELS[l] || l);
+  div.innerHTML = `<span class="who">${esc(who)}</span>${formatAssistantText(text)}${
+    checked.length ? `<span class="assistant-lookups">Checked: ${esc(checked.join(" · "))}</span>` : ""
+  }`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
   return div;
@@ -868,7 +945,7 @@ function openChat(id) {
   const log = $("assistant-log");
   log.innerHTML = "";
   log.classList.toggle("hidden", !chat || !chat.messages.length);
-  (chat ? chat.messages : []).forEach((m) => (m.search ? appendAssistantSearch(m.search) : appendAssistantMsg(m.who, m.text)));
+  (chat ? chat.messages : []).forEach((m) => (m.search ? appendAssistantSearch(m.search) : appendAssistantMsg(m.who, m.text, null, m.lookups)));
   assistantHistory = chat ? chat.history || [] : [];
   renderChatList();
 }
@@ -920,7 +997,7 @@ $("assistant-form").onsubmit = async (e) => {
     const res = await fetch("/api/assistant", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, history: assistantHistory, report: current }),
+      body: JSON.stringify({ message: text, history: assistantHistory, report: current, screen: screenState() }),
     });
     const data = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
     pending.remove();
@@ -928,9 +1005,9 @@ $("assistant-form").onsubmit = async (e) => {
     // The user may have switched chats while waiting: only paint the reply
     // into the log if its own chat is still the one on screen.
     if (activeChatId === chatId) {
-      appendAssistantMsg("Assistant", data.reply);
+      appendAssistantMsg("Assistant", data.reply, null, data.lookups);
       assistantHistory = [...assistantHistory, { role: "user", text }, { role: "assistant", text: data.reply }].slice(-12);
-      recordChatMessage({ who: "Assistant", text: data.reply });
+      recordChatMessage({ who: "Assistant", text: data.reply, lookups: data.lookups || [] });
       if (data.search) {
         appendAssistantSearch(data.search);
         recordChatMessage({ search: data.search });

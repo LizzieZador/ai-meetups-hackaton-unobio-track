@@ -28,11 +28,9 @@ def fetch_clinicaltrials(
     Caches results in cache/ using a SHA-256 hash of the query parameters.
     Returns None on failure — caller must not crash the pipeline.
     """
-    params = {
-        "query.cond": condition,
-        "query.intr": intervention,
-        "pageSize": max_results,
-    }
+    params = {"query.cond": condition, "pageSize": max_results}
+    if intervention:  # condition-only searches (e.g. "what is in trials for X?") omit it
+        params["query.intr"] = intervention
     if status_filter:
         if isinstance(status_filter, (list, tuple, set)):
             status_val = ",".join(s.strip() for s in status_filter if s.strip())

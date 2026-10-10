@@ -19,12 +19,14 @@ from typing import Optional
 
 import requests
 
+from sources.fetch_orange_book import first_us_approval
+
 API_URL = "https://api.fda.gov/drug/drugsfda.json"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
-def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 5) -> list[dict]:
+def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 20) -> list[dict]:
     """Look up Drugs@FDA application records for each drug name.
 
     Extracts designations explicitly present in Drugs@FDA submission metadata
@@ -53,20 +55,38 @@ def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 5) -> li
         # showed Brukinsa as approved in 2025 (its tablet NDA) instead of 2019.
         records = [r for r in (_build_record(name, app, today) for app in data) if r]
         if records:
-            results.append(min(records, key=lambda r: r.get("first_approval_date") or "99999999"))
+            record = min(records, key=lambda r: r.get("first_approval_date") or "99999999")
+            # openFDA has no record of many pre-2000 original approvals; the
+            # Orange Book does (riluzole: 2018 here vs Rilutek's real 1995).
+            ob = first_us_approval(name)
+            if ob and ob[0] < (record.get("first_approval_date") or "99999999"):
+                record["first_approval_date"] = ob[0]
+                if ob[1]:  # the brand that date belongs to, listed first
+                    record["brand_names"] = [ob[1]] + [b for b in record.get("brand_names", []) if b != ob[1]]
+            results.append(record)
 
     return results
 
 
 def _query_cached(name_lower: str, limit: int) -> Optional[list[dict]]:
-    """generic_name first; if that finds nothing, the product's active
-    ingredient. openFDA's harmonized `openfda.*` block is missing on some
-    applications, so a generic_name search silently misses approved drugs —
-    e.g. zanubrutinib (Brukinsa, NDA218785) is only found by ingredient."""
-    data = _query_one(f'openfda.generic_name:"{name_lower}"', limit)
-    if data == []:
-        data = _query_one(f'products.active_ingredients.name:"{name_lower.upper()}"', limit)
-    return data
+    """generic_name, then the product's active ingredient: openFDA's harmonized
+    `openfda.*` block is missing on some applications, so a generic_name search
+    alone silently misses approved drugs (zanubrutinib/Brukinsa is only found
+    by ingredient)."""
+    # Originator applications (NDA/BLA) first: a plain search returns generics
+    # (ANDAs) too, whose approval dates are years later than the original —
+    # dimethyl fumarate showed 2020 (a generic) instead of Tecfidera's 2013.
+    originator = " AND (application_number:NDA* OR application_number:BLA*)"
+    for search in (
+        f'openfda.generic_name:"{name_lower}"{originator}',
+        f'products.active_ingredients.name:"{name_lower.upper()}"{originator}',
+        f'openfda.generic_name:"{name_lower}"',
+        f'products.active_ingredients.name:"{name_lower.upper()}"',
+    ):
+        data = _query_one(search, limit)
+        if data != []:
+            return data  # results, or None on a network failure
+    return []
 
 
 def _query_one(search: str, limit: int) -> Optional[list[dict]]:

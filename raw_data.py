@@ -1,6 +1,7 @@
 """Helpers over collect_sources() output — no LLM involved: the set of real
 source names (for rejecting hallucinated citations) and the competitor list
 the cards render."""
+import re
 
 
 def collect_valid_sources(sources: dict) -> set:
@@ -17,8 +18,12 @@ _SALT_WORDS = {
 _STAGE_ORDER = ["APPROVAL", "PHASE_4", "PREAPPROVAL", "PHASE_3", "PHASE_2_3", "PHASE_2", "PHASE_1_2", "PHASE_1", "EARLY_PHASE_1"]
 
 
+_ACID_SALT = re.compile(r"\b(fumaric|succinic|maleic|tartaric|citric|hydrochloric) acid\b")
+
+
 def _base_name(name: str) -> str:
-    return " ".join(w for w in (name or "").lower().split() if w not in _SALT_WORDS)
+    name = _ACID_SALT.sub("", (name or "").lower())
+    return " ".join(w for w in name.split() if w not in _SALT_WORDS)
 
 
 def stage_rank(stage: str | None) -> int:

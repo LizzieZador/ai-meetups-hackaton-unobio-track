@@ -7,6 +7,7 @@ Owner: Scientific Analyst (+ Commercial Analyst — known drugs = competitors).
 """
 import datetime
 import json
+import re
 from typing import Optional
 
 import requests
@@ -347,9 +348,107 @@ def _fetch(mechanism: str, indication: str, cutoff_date: Optional[str]) -> Optio
     return records
 
 
+_PHARMA_WORDS = re.compile(
+    r"\b(inhibitors?|agonists?|antagonists?|antibod(?:y|ies)|blockers?|modulators?|degraders?|"
+    r"activators?|therapy|therapies|targeted|small[- ]molecule|bispecific|ADC)\b",
+    re.I,
+)
+_TARGET_SYNONYMS_QUERY = """query t($ids: [String!]!) {
+  targets(ensemblIds: $ids) { id approvedSymbol symbolSynonyms { label } nameSynonyms { label } }
+}"""
+
+
+def _clean_target_term(term: str) -> str:
+    """'anti-PD-1 antibody' -> 'PD-1', 'GLP-1 receptor agonist' -> 'GLP-1 receptor',
+    'CDK4/6 inhibitor' -> 'CDK4': pharmacology words name the drug, not the target."""
+    t = re.sub(r"\banti[- ]", "", term.strip(), flags=re.I)
+    t = re.sub(r"(\w)/\d+\b", r"\1", t)
+    return " ".join(_PHARMA_WORDS.sub(" ", t).split()) or term.strip()
+
+
+def _alnum(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _synonym_match(term: str, hits: list[dict]) -> dict | None:
+    """First search hit (search order) whose symbol or synonyms equal the term
+    ignoring case and punctuation — "PD-1" -> PDCD1 (synonym "PD1"),
+    "CD20" -> MS4A1, "CGRP" -> CALCA. Search alone ranks these as ambiguous."""
+    data = _query_graphql(_TARGET_SYNONYMS_QUERY, {"ids": [h["id"] for h in hits[:5]]})
+    by_id = {t["id"]: t for t in (data or {}).get("targets") or []}
+    key = _alnum(term)
+    for h in hits[:5]:
+        t = by_id.get(h["id"])
+        if not t:
+            continue
+        labels = [t.get("approvedSymbol")] + [s["label"] for s in t.get("symbolSynonyms") or []] + [
+            s["label"] for s in t.get("nameSynonyms") or []
+        ]
+        if any(_alnum(l) == key for l in labels if l):
+            return {"id": t["id"], "name": t["approvedSymbol"]}
+    return None
+
+
+_DISEASE_SYNONYMS_QUERY = """query d($ids: [String!]!) {
+  diseases(efoIds: $ids) { id name synonyms { terms } }
+}"""
+
+
+def _disease_norm(s: str) -> str:
+    """'Non small cell lung cancer' == 'non-small cell lung carcinoma',
+    "Crohn's disease" == 'Crohn disease'."""
+    s = (s or "").lower().replace("’", "'").replace("'s ", " ").replace("'", "").replace("-", " ")
+    s = re.sub(r"\bcarcinoma\b", "cancer", s)
+    return " ".join(s.split())
+
+
+def _disease_synonym_match(term: str, hits: list[dict]) -> dict | None:
+    """First hit (search order) whose name or a synonym equals the term —
+    abbreviations (T2D, RA, AML, SLE, IPF…) and alternative names (atopic
+    dermatitis = atopic eczema) live in synonyms, not in the display name."""
+    data = _query_graphql(_DISEASE_SYNONYMS_QUERY, {"ids": [h["id"] for h in hits[:5]]})
+    by_id = {d["id"]: d for d in (data or {}).get("diseases") or []}
+    key = _disease_norm(term)
+    for h in hits[:5]:
+        d = by_id.get(h["id"])
+        if not d:
+            continue
+        terms = [d.get("name")] + [t for s in d.get("synonyms") or [] for t in s.get("terms") or []]
+        if any(_disease_norm(t) == key for t in terms if t):
+            return {"id": d["id"], "name": d["name"]}
+    return None
+
+
 def _resolve_entity(term: str, entity: str) -> dict:
     """Resolve term to entity ID; returns {'id': str, 'name': str, 'ambiguous': bool, 'candidates': list}."""
-    clean_term = term.strip()
+    result = _resolve_once(term, entity)
+    # "HER2-positive breast cancer" has no disease entity of its own; the
+    # disease without its leading qualifier ("breast cancer") does.
+    # Only an exact/synonym hit on a real disease is accepted here: a fuzzy hit
+    # on a shortened phrase ("ejection fraction") would be worse than nothing.
+    words = term.split()
+    while entity == "disease" and not result["id"] and len(words) > 1:
+        words = words[1:]
+        shorter = _resolve_once(" ".join(words), entity)
+        if shorter.get("how") in ("exact", "synonym") and not _is_trait(shorter):
+            result = shorter
+    return result
+
+
+def _is_trait(hit: dict) -> bool:
+    """A lab measurement / quantitative trait rather than a disease. Some
+    abbreviations collide with one ("IPF" is also "immature platelet
+    fraction"), so these rank after real diseases. "<disease> symptom
+    measurement" is the exception: that is how Open Targets currently files
+    some diseases themselves (multiple sclerosis, with all its drugs)."""
+    name = (hit.get("name") or "").lower()
+    if "symptom measurement" in name:
+        return False
+    return hit.get("id", "").startswith("OBA_") or "quantity" in name or name.startswith("level of") or "measurement" in name
+
+
+def _resolve_once(term: str, entity: str) -> dict:
+    clean_term = _clean_target_term(term) if entity == "target" else term.strip()
     data = _query_graphql(SEARCH_QUERY, {"term": clean_term})
     if not data or not data.get("search"):
         return {"id": None, "name": None, "ambiguous": False, "candidates": []}
@@ -368,13 +467,30 @@ def _resolve_entity(term: str, entity: str) -> dict:
     if not matching:
         return {"id": None, "name": None, "ambiguous": False, "candidates": []}
 
-    # Exact name match check
-    exact = next((h for h in matching if (h.get("name") or "").strip().lower() == clean_term.lower()), None)
+    # Exact name match, ignoring a possessive: "Parkinson's disease" is
+    # Open Targets' "Parkinson disease" (without this the term came back
+    # ambiguous and resolved to nothing).
+    def norm(s: str) -> str:
+        return " ".join(s.lower().replace("’", "'").replace("'s ", " ").replace("'", "").split())
+
+    if entity == "disease":  # stable: real diseases first, search order otherwise kept
+        matching = sorted(matching, key=_is_trait)
+
+    exact = next((h for h in matching if norm(h.get("name") or "") == norm(clean_term)), None)
+    if not exact and entity == "disease":
+        exact = next((h for h in matching if _disease_norm(h.get("name")) == _disease_norm(clean_term)), None)
     if exact:
-        return {"id": exact["id"], "name": exact["name"], "ambiguous": False, "candidates": []}
+        return {"id": exact["id"], "name": exact["name"], "ambiguous": False, "candidates": [], "how": "exact"}
+
+    synonym = (_synonym_match if entity == "target" else _disease_synonym_match)(clean_term, matching)
+    if synonym:
+        return {**synonym, "ambiguous": False, "candidates": [], "how": "synonym"}
 
     # Top hit
     top = matching[0]
+    if entity == "disease" and _is_trait(top):
+        # Only measurements matched, and not by name: no disease found.
+        return {"id": None, "name": None, "ambiguous": False, "candidates": []}
     # Check if ambiguous (multiple hits with close relevancy)
     if len(matching) > 1 and matching[1].get("name", "").lower() != top.get("name", "").lower():
         # If top hit doesn't clearly match term, flag as ambiguous
@@ -387,7 +503,7 @@ def _resolve_entity(term: str, entity: str) -> dict:
                 "candidates": [{"id": h["id"], "name": h["name"]} for h in matching[:3]],
             }
 
-    return {"id": top["id"], "name": top["name"], "ambiguous": False, "candidates": []}
+    return {"id": top["id"], "name": top["name"], "ambiguous": False, "candidates": [], "how": "top"}
 
 
 def _extract_synonyms(target: dict) -> list[str]:

@@ -108,8 +108,9 @@ def assistant():
         return jsonify(error="Message is required."), 400
     history = body.get("history") or []
     report = body.get("report")
+    screen = body.get("screen") if isinstance(body.get("screen"), dict) else {}
     try:
-        return jsonify(ask_assistant(message, history, report))
+        return jsonify(ask_assistant(message, history, report, screen))
     except Exception as e:  # surface API-key / network problems to the chat instead of a 500 page
         return jsonify(error=f"Assistant failed: {e}"), 500
 

@@ -176,6 +176,48 @@ def _like(term: str) -> str:
     return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
+# Registry condition names are written every which way — "Alzheimer's Disease",
+# "Alzheimer Disease", "NSCLC", "Non-small Cell Lung Cancer" — and a single
+# ILIKE substring caught only one spelling (e.g. 1,936 of ~3,600 Alzheimer
+# trials). Conditions are matched by word-boundary regexes instead: words in
+# order, punctuation/possessives ignored, plus the abbreviation <-> full name.
+_CONDITION_ABBREVIATIONS = {
+    "nsclc": "non small cell lung cancer", "sclc": "small cell lung cancer",
+    "aml": "acute myeloid leukemia", "cll": "chronic lymphocytic leukemia", "cml": "chronic myeloid leukemia",
+    "hcc": "hepatocellular carcinoma", "rcc": "renal cell carcinoma", "crc": "colorectal cancer",
+    "t2d": "type 2 diabetes", "t2dm": "type 2 diabetes", "copd": "chronic obstructive pulmonary disease",
+    "ms": "multiple sclerosis", "ad": "alzheimer disease", "pd": "parkinson disease",
+    "ra": "rheumatoid arthritis", "sle": "systemic lupus erythematosus", "ipf": "idiopathic pulmonary fibrosis",
+    "als": "amyotrophic lateral sclerosis", "dmd": "duchenne muscular dystrophy", "sma": "spinal muscular atrophy",
+    "nash": "nonalcoholic steatohepatitis", "mash": "metabolic dysfunction associated steatohepatitis",
+}
+
+
+def _condition_words(text: str) -> list[str]:
+    text = (text or "").lower().replace("’", "'").replace("'s", " ")
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def _words_regex(words: list[str]) -> str:
+    return r"\m" + r"\M.*\m".join(words) + r"\M"
+
+
+def _condition_patterns(condition: str) -> tuple[list[str], list[str]]:
+    """(include, exclude) Postgres regexes for a condition."""
+    words = _condition_words(condition)
+    if not words:
+        return [], []
+    include = {_words_regex(words)}
+    joined = " ".join(words)
+    if joined in _CONDITION_ABBREVIATIONS:
+        include.add(_words_regex(_CONDITION_ABBREVIATIONS[joined].split()))
+    for abbr, full in _CONDITION_ABBREVIATIONS.items():
+        if full == joined and len(abbr) >= 3:  # 2-letter ones (MS, AD) are too ambiguous to add
+            include.add(_words_regex([abbr]))
+    exclude = [r"\mnon\M.?\msmall\M", r"\mnsclc\M"] if "small" in words and "non" not in words and "nsclc" not in words else []
+    return sorted(include), exclude
+
+
 def _validate_cutoff(cutoff_date: Optional[str]) -> None:
     if cutoff_date is None:
         return
@@ -433,7 +475,7 @@ def _build_live_sql(cutoff_date: Optional[str], with_groups: bool) -> str:
             FROM ctgov.studies s
             JOIN ctgov.conditions c ON c.nct_id = s.nct_id
             LEFT JOIN ctgov.interventions i ON i.nct_id = s.nct_id
-            WHERE (c.name ILIKE %s OR c.downcase_name ILIKE %s)
+            WHERE c.downcase_name ~* ANY(%s) AND NOT c.downcase_name ~* ANY(%s)
               AND (i.name ILIKE ANY(%s) OR s.brief_title ILIKE ANY(%s))
               {cutoff_clause}
             ORDER BY s.nct_id
@@ -443,7 +485,7 @@ def _build_live_sql(cutoff_date: Optional[str], with_groups: bool) -> str:
             SELECT DISTINCT s.nct_id
             FROM ctgov.studies s
             JOIN ctgov.conditions c ON c.nct_id = s.nct_id
-            WHERE (c.name ILIKE %s OR c.downcase_name ILIKE %s)
+            WHERE c.downcase_name ~* ANY(%s) AND NOT c.downcase_name ~* ANY(%s)
               AND s.brief_title NOT ILIKE ANY(%s)
               AND NOT EXISTS (
                   SELECT 1 FROM ctgov.interventions i2
@@ -516,11 +558,11 @@ def _query_live(
     search_patterns = [_like(t) for t in (drug_terms | symbol_terms)] or [_like(intervention)]
     title_patterns = list(set(search_patterns + [_like(intervention)]))
 
-    lc = _like(condition)
+    include, exclude = _condition_patterns(condition)
     cut = [cutoff_date] if cutoff_date else []
     params = tuple(
-        [lc, lc, search_patterns, title_patterns] + cut
-        + [lc, lc, title_patterns, search_patterns] + cut
+        [include, exclude, search_patterns, title_patterns] + cut
+        + [include, exclude, title_patterns, search_patterns] + cut
     )
 
     raw_records = []
@@ -599,16 +641,20 @@ def _query_flatfile(
     )
     _raise_csv_limit()
     try:
-        cond_l = condition.lower()
         drug_terms, symbol_terms = _resolve_target_terms(
             condition, intervention, same_mechanism_drugs, target_symbols
+        )
+        # Same spelling-robust patterns as the live query (Postgres \m \M -> \b).
+        include, exclude = (
+            [re.compile(p.replace(r"\m", r"\b").replace(r"\M", r"\b"), re.I) for p in ps]
+            for ps in _condition_patterns(condition)
         )
 
         condition_ncts = set()
         with open(conditions_file, mode="r", encoding="utf-8") as f:
             for row in csv.DictReader(f, delimiter="|"):
                 name = row.get("downcase_name") or row.get("name") or ""
-                if cond_l in name.lower():
+                if any(p.search(name) for p in include) and not any(p.search(name) for p in exclude):
                     condition_ncts.add(row.get("nct_id"))
 
         if not condition_ncts:

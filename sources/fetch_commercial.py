@@ -25,6 +25,10 @@ PRICING_CSV_PATH = DATA_DIR / "pricing_data.csv"
 
 INDICATION_SYNONYMS: dict[str, str] = {
     "nsclc": "non-small cell lung cancer",
+    # SCLC is a different disease: listed explicitly so neither the "lung cancer"
+    # entry below nor word-subset matching can map it onto NSCLC data.
+    "sclc": "small cell lung cancer",
+    "small cell lung cancer": "small cell lung cancer",
     "non small cell lung cancer": "non-small cell lung cancer",
     "lung cancer": "non-small cell lung cancer",
     "ad": "alzheimers disease",
@@ -39,15 +43,35 @@ INDICATION_SYNONYMS: dict[str, str] = {
     "parkinson's disease": "parkinsons disease",
     "parkinson disease": "parkinsons disease",
     "ra": "rheumatoid arthritis",
+    "pd": "parkinsons disease",
     "atopic eczema": "atopic dermatitis",
     "eczema": "atopic dermatitis",
 }
 
 
+def _norm(name: str) -> str:
+    """Lowercase, apostrophes dropped (not turned into a space), other punctuation
+    -> space: "Alzheimer's" -> "alzheimers", matching the CSV's "Alzheimers Disease"."""
+    return re.sub(r"[^a-z0-9]+", " ", (name or "").lower().replace("’", "'").replace("'", "")).strip()
+
+
+# Keys and values normalized exactly like a query is: the raw table's keys keep
+# their apostrophes/hyphens ("alzheimer's disease"), which a normalized query
+# could never equal — Alzheimer's/Parkinson's never matched their CSV rows.
+_SYNONYMS = {_norm(k): _norm(v) for k, v in INDICATION_SYNONYMS.items()}
+
+
 def _canonical_indication(name: str) -> str:
     """Normalize indication name for robust synonym comparison."""
-    cleaned = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
-    return INDICATION_SYNONYMS.get(cleaned, cleaned)
+    cleaned = _norm(name)
+    if cleaned in _SYNONYMS:
+        return _SYNONYMS[cleaned]
+    # A qualified name ("KRAS G12C-mutant NSCLC", "relapsing MS") contains a
+    # known one; short abbreviations (ms, ad, ra, pd) only count as a whole query.
+    for key in sorted(_SYNONYMS, key=len, reverse=True):  # most specific phrase first
+        if len(key) >= 4 and re.search(rf"\b{re.escape(key)}\b", cleaned):
+            return _SYNONYMS[key]
+    return cleaned
 
 
 def _match_indication(query: str, target_name: str) -> bool:
@@ -62,7 +86,13 @@ def _match_indication(query: str, target_name: str) -> bool:
     q_words = set(q_can.split())
     t_words = set(t_can.split())
     # Substring match only if one is a complete subset and shares key nouns
-    if (q_words.issubset(t_words) or t_words.issubset(q_words)) and len(q_words & t_words) >= 2:
+    # "non" flips the meaning ("small cell" vs "non-small cell"), so a word set
+    # differing by it is a different disease, never a subset match.
+    if (
+        (q_words.issubset(t_words) or t_words.issubset(q_words))
+        and len(q_words & t_words) >= 2
+        and "non" not in (q_words ^ t_words)
+    ):
         return True
     return False
 

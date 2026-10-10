@@ -222,6 +222,7 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .chat-list li:hover .chat-delete, .chat-delete:focus-visible { opacity:1; }
 .chat-delete:hover { color:var(--red); background:var(--bg); }
 .assistant-p { margin:0 0 4px; }
+.assistant-lookups { display:block; margin-top:4px; font-size:11px; color:var(--muted); }
 .assistant-bullets { margin:2px 0 0; padding-left:18px; }
 .assistant-bullets li { margin:2px 0; }
 .assistant-search { background:var(--tint); border-radius:6px; padding:8px 10px; }

@@ -81,6 +81,40 @@ def _iso(date_text: str) -> str | None:
         return None
 
 
+_SALTS = {"hydrochloride", "hcl", "sodium", "potassium", "maleate", "mesylate", "besylate", "tosylate",
+          "citrate", "fumarate", "succinate", "tartrate", "phosphate", "sulfate", "acetate"}
+
+
+def _ingredient_base(text: str) -> str:
+    return " ".join(w for w in re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split() if w not in _SALTS)
+
+
+def first_us_approval(drug_name: str) -> tuple[str, str] | None:
+    """(YYYYMMDD, trade name) of the earliest NDA product for this ingredient.
+
+    openFDA misses old originators (no harmonized `openfda` block, and no
+    record of the original approval — riluzole's earliest is a 2003
+    supplement, while Rilutek was approved in 1995); the Orange Book lists every
+    product's approval date. "Approved Prior to Jan 1, 1982" maps to 19811231.
+    Single-ingredient products only, so a combination product's date never
+    stands in for the drug itself. Biologics (BLAs) aren't in the Orange Book.
+    """
+    tables = _load()
+    target = _ingredient_base(drug_name)
+    if not tables or not target:
+        return None
+    best = None
+    for entry in tables.values():
+        for p in entry["products"]:
+            if p.get("Appl_Type") != "N" or ";" in p.get("Ingredient", "") or _ingredient_base(p.get("Ingredient")) != target:
+                continue
+            text = (p.get("Approval_Date") or "").strip()
+            date = "19811231" if text.startswith("Approved Prior") else (_iso(text) or "").replace("-", "")
+            if date and (best is None or date < best[0]):
+                best = (date, (p.get("Trade_Name") or "").strip())
+    return best
+
+
 def fetch_orange_book_patents(regulatory_records: list[dict]) -> list[dict]:
     """One record per approved application found in the Orange Book."""
     tables = _load()
