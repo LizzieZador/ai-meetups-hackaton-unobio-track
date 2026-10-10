@@ -14,6 +14,7 @@ body { margin:0; display:flex; height:100vh; font-family:Inter,system-ui,-apple-
 .side-head { display:flex; justify-content:space-between; align-items:center; font-size:14px; color:var(--muted); padding:18px 18px 10px; flex:none; }
 .side-head button, #open-sidebar { display:flex; align-items:center; background:none; border:0; cursor:pointer; color:var(--muted); padding:2px; border-radius:4px; }
 .side-head button:hover, #open-sidebar:hover { color:var(--text); background:var(--bg); }
+.side-head-actions { display:flex; align-items:center; gap:2px; }
 
 .sidebar-panel { display:flex; flex-direction:column; overflow:hidden; }
 #history-panel { flex:0 0 auto; height:240px; min-height:40px; }
@@ -203,6 +204,41 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .modal-box .sources-list ul { margin:0; padding-left:18px; line-height:1.7; font-size:14px; }
 
 .cost { margin-top:28px; color:var(--muted); font-size:13px; text-align:center; }
+
+/* welcome page — a full-screen landing that animates into the app. It sits over
+   the app shell rather than replacing it, so leaving it is a transition on one
+   element instead of a re-render. */
+.welcome { position:fixed; inset:0; z-index:30; background:var(--bg); display:flex;
+           align-items:center; justify-content:center; padding:24px;
+           transition:opacity .4s ease, transform .4s ease; }
+.welcome.leaving { opacity:0; transform:translateY(-26px) scale(.98); pointer-events:none; }
+.welcome-inner { width:min(680px,100%); text-align:center; transition:transform .4s ease; }
+.welcome.leaving .welcome-inner { transform:translateY(-34px) scale(.96); }
+.welcome-title { margin:0; font-size:34px; font-weight:600; letter-spacing:-.01em; }
+.welcome-sub { margin:12px 0 30px; color:var(--muted); font-size:16px; }
+.welcome-form { display:flex; gap:12px; background:#fff; border:1px solid var(--line);
+                border-radius:12px; padding:10px; box-shadow:0 4px 18px rgba(0,0,0,.07); }
+.welcome-form input { flex:1; min-width:0; padding:13px 14px; font-size:16px; color:var(--text);
+                      background:transparent; border:0; outline:none; }
+.welcome-form input::placeholder { color:var(--muted); }
+#welcome-go { flex:none; background:var(--blue); color:#fff; border:0; border-radius:8px;
+              padding:13px 26px; font-size:15px; font-weight:600; cursor:pointer; }
+#welcome-go:disabled { background:var(--blue-soft); cursor:default; }
+.welcome-hint { margin:14px 0 0; color:var(--muted); font-size:13px; }
+
+/* the app fading up as the welcome page clears */
+@keyframes app-enter { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
+body.app-enter #sidebar, body.app-enter main { animation:app-enter .45s ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome, .welcome-inner { transition:none; }
+  body.app-enter #sidebar, body.app-enter main { animation:none; }
+}
+
+@media (max-width:800px) {
+  .welcome-title { font-size:26px; }
+  .welcome-form { flex-direction:column; }
+}
 
 @media (max-width:800px) {
   #sidebar { display:none; }

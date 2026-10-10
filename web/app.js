@@ -593,5 +593,56 @@ $("assistant-form").onsubmit = async (e) => {
 };
 $("assistant-input").oninput = updateAssistantSendEnabled;
 
+/* Welcome page <-> app. The overlay stays in the DOM and is moved in and out
+   with one class, so both directions run the same transition. Its box matches
+   quick-search ("mechanism | indication"), which the server already parses. */
+const WELCOME_MS = 420;
+
+function leaveWelcome(then) {
+  const w = $("welcome");
+  if (w.classList.contains("hidden")) {
+    if (then) then();
+    return;
+  }
+  w.classList.add("leaving");
+  document.body.classList.add("app-enter");
+  setTimeout(() => {
+    w.classList.add("hidden");
+    document.body.classList.remove("app-enter");
+    if (then) then();
+  }, WELCOME_MS);
+}
+
+function enterWelcome() {
+  const w = $("welcome");
+  w.classList.remove("hidden");
+  // Start from the "out" state and release it two frames later, so the browser
+  // has a computed style to animate from (the element was display:none).
+  w.classList.add("leaving");
+  requestAnimationFrame(() => requestAnimationFrame(() => w.classList.remove("leaving")));
+  updateWelcomeGoEnabled();
+  $("welcome-query").focus();
+}
+
+function updateWelcomeGoEnabled() {
+  $("welcome-go").disabled = !$("welcome-query").value.trim();
+}
+
+$("welcome-form").onsubmit = (e) => {
+  e.preventDefault();
+  const query = $("welcome-query").value.trim();
+  if (!query) return;
+  $("welcome-go").disabled = true;
+  leaveWelcome(() => {
+    setSearchMode("quick");
+    $("query").value = query;
+    updateEvaluateEnabled();
+    evaluate({ query });
+  });
+};
+$("welcome-query").oninput = updateWelcomeGoEnabled;
+$("home-btn").onclick = enterWelcome;
+
 setSearchMode("detailed");
 renderHistory();
+$("welcome-query").focus();
