@@ -512,7 +512,12 @@ def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[di
             "Drug": _cell(name, link) if link else (name or NA),
             "Clinical Stage": d.get("stage") or NA,
             "MoA": _analog_moa(d),
-            "Status": f"Approved ({first_approval})" if first_approval else NA,
+            "Status": (
+                f"Approved ({first_approval})" if first_approval
+                # Open Targets says approved but openFDA has no US record: an ex-US approval
+                else "Approved outside US (no FDA record)" if (d.get("stage") or "").upper() == "APPROVAL"
+                else NA
+            ),
             "Sponsor": _sponsor_display(reg, orange_book),
         })
 

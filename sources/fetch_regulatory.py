@@ -27,7 +27,7 @@ CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
-def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 1) -> list[dict]:
+def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 5) -> list[dict]:
     """Look up Drugs@FDA application records for each drug name.
 
     Extracts designations explicitly present in Drugs@FDA submission metadata
@@ -50,16 +50,30 @@ def fetch_regulatory_signals(drug_names: list[str], max_per_drug: int = 1) -> li
         if not data:
             continue
 
-        for app in data:
-            record = _build_record(name, app, today)
-            if record:
-                results.append(record)
+        # One record per drug: its earliest-approved application. A drug often
+        # has several (capsule NDA, later tablet NDA, ...) and the first one is
+        # the true first US approval — taking whichever the API listed first
+        # showed Brukinsa as approved in 2025 (its tablet NDA) instead of 2019.
+        records = [r for r in (_build_record(name, app, today) for app in data) if r]
+        if records:
+            results.append(min(records, key=lambda r: r.get("first_approval_date") or "99999999"))
 
     return results
 
 
 def _query_cached(name_lower: str, limit: int) -> Optional[list[dict]]:
-    params = {"search": f'openfda.generic_name:"{name_lower}"', "limit": limit}
+    """generic_name first; if that finds nothing, the product's active
+    ingredient. openFDA's harmonized `openfda.*` block is missing on some
+    applications, so a generic_name search silently misses approved drugs —
+    e.g. zanubrutinib (Brukinsa, NDA218785) is only found by ingredient."""
+    data = _query_one(f'openfda.generic_name:"{name_lower}"', limit)
+    if data == []:
+        data = _query_one(f'products.active_ingredients.name:"{name_lower.upper()}"', limit)
+    return data
+
+
+def _query_one(search: str, limit: int) -> Optional[list[dict]]:
+    params = {"search": search, "limit": limit}
     param_hash = hashlib.sha256(json.dumps(params, sort_keys=True).encode("utf-8")).hexdigest()
     cache_path = CACHE_DIR / f"fda_drugsfda_{param_hash}.json"
 
