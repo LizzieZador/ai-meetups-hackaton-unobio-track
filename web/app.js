@@ -63,6 +63,13 @@ function historyLabel(s) {
 let lastActiveHistoryKey = null;
 let historyFilter = "";
 
+function verdictDotClass(verdict) {
+  if (verdict === "Invest") return "invest";
+  if (verdict === "Do Not Invest") return "no";
+  if (verdict === "Conditional") return "cond";
+  return "unknown";
+}
+
 function renderHistory(activeKey) {
   if (typeof activeKey !== "undefined") lastActiveHistoryKey = activeKey;
   const ul = $("history");
@@ -80,7 +87,8 @@ function renderHistory(activeKey) {
     const key = `${s.indication}\u0000${s.mechanism}`;
     const li = document.createElement("li");
     li.className = key === lastActiveHistoryKey ? "active" : "";
-    li.innerHTML = `<span class="q">${esc(historyLabel(s))}</span>
+    const dotClass = verdictDotClass(s.report.verdict);
+    li.innerHTML = `<span class="q"><span class="history-dot ${dotClass}" title="${esc(s.report.verdict || "No verdict")}"></span>${esc(historyLabel(s))}</span>
       <span class="when">${esc(whenLabel(s.at))} · ${filledCount(s.report)}/${s.report.cards.length}</span>`;
     li.title = historyLabel(s);
     li.onclick = () => {

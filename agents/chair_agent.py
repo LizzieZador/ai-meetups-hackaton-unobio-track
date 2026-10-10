@@ -154,7 +154,7 @@ def _sanitize_chair_claims(
         c.type = "inference"
         if c.confidence not in ("low", "medium", "high"):
             c.confidence = "medium"
-        if not c.reasoning:
+        if not (c.reasoning or "").strip():
             c.reasoning = "Committee synthesis based on analyst evidence."
 
         if c.section == "recommendation":

@@ -31,12 +31,19 @@ app = Flask(__name__, static_folder=None)
 def split_query(query: str) -> tuple[str, str]:
     """Quick-search's one combined box -> (indication, mechanism).
 
-    "KRAS G12C inhibitor | NSCLC" / "... for NSCLC" / "... in NSCLC" split into
-    mechanism and indication; a bare query (no separator) is used for both so
-    the pipeline still runs — case-insensitivity and the mechanism-fallback in
-    collect_sources() already handle a single generic word reasonably.
+    "KRAS G12C inhibitor | NSCLC" / "... / NSCLC" / "... for NSCLC" / "... in
+    NSCLC" split into mechanism and indication; a bare query (no separator)
+    is used for both so the pipeline still runs — case-insensitivity and the
+    mechanism-fallback in collect_sources() already handle a single generic
+    word reasonably.
+
+    BUG FIX: "/" used to not be recognized as a separator at all, so typing
+    "PCSK9 / hypercholesterolemia" fell through to the no-separator fallback
+    and ran with indication = mechanism = the entire unparsed string (visibly
+    showing as "PCSK9 / hypercholesterolemia in PCSK9 / hypercholesterolemia"
+    in the report head) instead of actually splitting it.
     """
-    parts = re.split(r"\s*\|\s*|\s+(?:for|in)\s+", query, maxsplit=1, flags=re.I)
+    parts = re.split(r"\s*\|\s*|\s*/\s*|\s+(?:for|in)\s+", query, maxsplit=1, flags=re.I)
     if len(parts) == 2 and all(p.strip() for p in parts):
         return parts[1].strip(), parts[0].strip()
     return query, query

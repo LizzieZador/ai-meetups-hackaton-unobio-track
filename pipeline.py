@@ -10,12 +10,23 @@ Deliverable: architecture, source attribution, model/API usage, cost, logs/trace
 """
 import datetime
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# BUG FIX: on Windows, stdout defaults to the system codepage (cp1251/cp1252),
+# which can't encode e.g. Greek letters an LLM writes freely in scientific
+# text ("β-secretase" for BACE1) — any print() of model-generated text then
+# raises UnicodeEncodeError. Every entry point (server.py, main.py) imports
+# this module first, so reconfiguring stdout once here covers all of them.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from agents.chair_agent import chair_agent
 from agents.clinical_agent import clinical_agent
