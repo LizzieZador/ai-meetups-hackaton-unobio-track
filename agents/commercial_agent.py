@@ -226,10 +226,16 @@ def _run_commercial_opportunity_pass(
         f"Available commercial & competitive sources:\n{prompt_sources_block}\n"
     )
 
-    raw = ask_claude_json(SYSTEM_PROMPT_COMMERCIAL, user_prompt, max_tokens=4000)
+    # 8000, not 4000: a reasoning-tier model (ChatGPT's gpt-6-luna included) spends
+    # tokens on its own hidden reasoning before writing the visible answer — at a
+    # tight ceiling that reasoning alone can exhaust the budget and the call comes
+    # back completely empty. Confirmed live: this exact call ("Opportunity") was
+    # the one that failed in the historical backtest, at this same 4000 ceiling,
+    # while chair_agent's 8000-ceiling call in the same run didn't.
+    raw = ask_claude_json(SYSTEM_PROMPT_COMMERCIAL, user_prompt, max_tokens=8000)
     if not raw:
         print("[CommercialAgent] Initial LLM response was empty or unparseable. Retrying once...")
-        raw = ask_claude_json(SYSTEM_PROMPT_COMMERCIAL, user_prompt, max_tokens=4000)
+        raw = ask_claude_json(SYSTEM_PROMPT_COMMERCIAL, user_prompt, max_tokens=8000)
 
     # 1. Extract market model assumptions before validating claim schema
     assumptions = _extract_market_assumptions_from_raw(raw, indication, cutoff_date=cutoff_date)

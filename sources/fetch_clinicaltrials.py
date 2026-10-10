@@ -5,12 +5,14 @@ Owner: Clinical Analyst.
 import datetime
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Optional, Union
 
 import requests
 
 API_URL = "https://clinicaltrials.gov/api/v2/studies"
+_NON_THERAPY = re.compile(r"placebo|contrast|gadolin|tracer|radioligand for imaging|vehicle", re.I)
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -40,7 +42,12 @@ def fetch_clinicaltrials(
         if status_val:
             params["filter.overallStatus"] = status_val
 
-    param_hash = hashlib.sha256(json.dumps(params, sort_keys=True).encode("utf-8")).hexdigest()
+    # "_schema" is part of the cache key only, never sent to the API: bumping it
+    # makes records cached before a new field existed (here: "interventions")
+    # refetch once instead of silently lacking it forever.
+    param_hash = hashlib.sha256(
+        json.dumps({**params, "_schema": 3}, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     cache_path = CACHE_DIR / f"clinicaltrials_{param_hash}.json"
     alt_cache_path = CACHE_DIR / f"{param_hash}.json"
 
@@ -82,6 +89,17 @@ def _fetch(params: dict) -> Optional[list[dict]]:
             enrollment_count = (design.get("enrollmentInfo") or {}).get("count")
             lead_sponsor_name = (sponsor.get("leadSponsor") or {}).get("name", "")
             start_date = (status.get("startDateStruct") or {}).get("date", "")
+            # The trial's actual investigational products, from the registry's own
+            # interventions list — drugs/biologics only, without placebo and
+            # without imaging/diagnostic agents (registries file MRI contrast
+            # media as type DRUG too, which is not a therapy being tested).
+            interventions = list(dict.fromkeys(
+                (iv.get("name") or "").strip()
+                for iv in (protocol.get("armsInterventionsModule") or {}).get("interventions", [])
+                if iv.get("type") in ("DRUG", "BIOLOGICAL")
+                and iv.get("name")
+                and not _NON_THERAPY.search(iv.get("name", ""))
+            ))
 
             phases_str = ", ".join(phases) if phases else "N/A"
 
@@ -109,6 +127,7 @@ def _fetch(params: dict) -> Optional[list[dict]]:
                 "enrollmentCount": enrollment_count,
                 "leadSponsor": lead_sponsor_name,
                 "startDate": start_date,
+                "interventions": interventions,
                 # The query's own condition string, verbatim — not a per-trial
                 # field from the API, but a 100% accurate one since it's the
                 # exact value this search was run for (needed by the Pipeline

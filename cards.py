@@ -46,9 +46,9 @@ CARDS: list[dict] = [
     },
     {
         "id": "patient_population",
-        "title": "Patient population, treatment dynamics & TAM",
-        "subtitle": "Epidemiology, claims and EMR, treatment patterns, market research",
-        "claim_sections": ["commercial_opportunity"],
+        "title": "Patient population, TAM & financials",
+        "subtitle": "Epidemiology, treatment patterns, market research, rNPV model and capital to next milestone",
+        "claim_sections": ["commercial_opportunity", "capital_required"],
         "raw_sources": ["commercial"],
         "data_gap_note": "Not available — underlying epidemiology data (market_data.csv) has not yet been verified by the team.",
     },
@@ -57,7 +57,7 @@ CARDS: list[dict] = [
         "title": "Existing competitive landscape",
         "subtitle": "Approved products and late-stage pipeline",
         "claim_sections": ["competitive_landscape"],
-        "raw_sources": ["opentargets", "aact", "regulatory"],
+        "raw_sources": ["opentargets", "aact", "regulatory", "drug_profiles"],
         "include_analogs": True,
     },
     {
@@ -70,9 +70,9 @@ CARDS: list[dict] = [
     {
         "id": "patent_ip",
         "title": "Patent & IP review",
-        "subtitle": "Lens.org patent records; litigation and freedom-to-operate analysis not covered",
+        "subtitle": "FDA Orange Book patents & exclusivities, Lens.org filings; litigation and freedom-to-operate not covered",
         "claim_sections": [],
-        "raw_sources": ["patents", "regulatory"],
+        "raw_sources": ["patents", "regulatory", "orange_book"],
     },
     {
         "id": "trial_design",

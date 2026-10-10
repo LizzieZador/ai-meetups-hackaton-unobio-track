@@ -360,10 +360,16 @@ def run_agent_llm_with_retry(
     section: Section,
     agent_name: str = "Agent",
     max_claims: int = 12,
-    max_tokens: int = 4000,
+    max_tokens: int = 8000,
     valid_sources: Optional[set] = None,
 ) -> list[Claim]:
-    """Execute LLM call with 1 automatic retry on empty/unparseable response, then validate."""
+    """Execute LLM call with 1 automatic retry on empty/unparseable response, then validate.
+
+    8000, not 4000: a reasoning-tier model spends tokens on hidden reasoning
+    before writing the visible answer, so a tight ceiling can exhaust the
+    budget and return completely empty — confirmed live in a historical
+    backtest run, at the old 4000 default, for exactly the agents that use
+    this shared helper (ClinicalAgent among them)."""
     raw = ask_claude_json(system_prompt, user_prompt, max_tokens=max_tokens)
     if not raw:
         print(f"[{agent_name}] Initial LLM response was empty or unparseable. Retrying once...")

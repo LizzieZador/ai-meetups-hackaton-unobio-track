@@ -40,7 +40,10 @@ from report import render_report
 from schema import Claim, get_dropped_claims_log, reset_dropped_claims_log, log_dropped_claim
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
+from sources.fetch_drug_profiles import fetch_competitor_profiles
 from sources.fetch_lens import fetch_patent_signals
+from sources.fetch_opentargets import _resolve_entity
+from sources.fetch_orange_book import fetch_orange_book_patents
 from sources.fetch_regulatory import fetch_regulatory_signals
 from sources.fetch_secedgar import fetch_press_releases
 
@@ -116,16 +119,39 @@ def collect_sources(
     # analog (e.g. a user searching "sotorasib" alone).
     analog_names = [d["name"] for d in extract_analogs(sources={"opentargets": opentargets_records}) if d.get("name")]
     query_terms = analog_names or ([mechanism] if mechanism else [])
+    clinicaltrials_records = fetch_clinicaltrials(condition=indication, intervention=mechanism) or []
+    # 10, not 5: analogs now come furthest-along first, and the top of that list
+    # often holds drugs approved only outside the US (no openFDA record), which
+    # pushed FDA-approved ones past a 5-name cut. openFDA is keyless and cached.
+    regulatory_records = fetch_regulatory_signals(query_terms[:10]) if query_terms else []
+
+    # Drug profiles and the Orange Book are present-day snapshots with no
+    # historical view, so a backtest (cutoff_date set) skips them rather than
+    # leaking later approvals/competitors into a past-dated evaluation.
+    drug_profiles: list[dict] = []
+    orange_book: list[dict] = []
+    if not cutoff_date:
+        try:
+            target_symbol = (_resolve_entity(mechanism, "target") or {}).get("name") or ""
+            drug_profiles = fetch_competitor_profiles(target_symbol, analog_names, clinicaltrials_records)
+        except Exception as e:  # enrichment only — never fail the run over it
+            print(f"[Pipeline Warning] drug profile enrichment failed: {e}")
+        try:
+            orange_book = fetch_orange_book_patents(regulatory_records)
+        except Exception as e:
+            print(f"[Pipeline Warning] Orange Book lookup failed: {e}")
 
     return {
         "pubmed": pubmed_records,
         "opentargets": opentargets_records,
-        "clinicaltrials": fetch_clinicaltrials(condition=indication, intervention=mechanism) or [],
+        "clinicaltrials": clinicaltrials_records,
         "aact": aact_records,
         "commercial": comm_bundle.get("commercial", []),
-        "regulatory": fetch_regulatory_signals(query_terms[:5]) if query_terms else [],
+        "regulatory": regulatory_records,
         "market_news": fetch_press_releases(query_terms[:3], max_per_term=4) if query_terms else [],
         "patents": fetch_patent_signals(query_terms[:3], max_per_term=5) if query_terms else [],
+        "drug_profiles": drug_profiles,
+        "orange_book": orange_book,
     }
 
 

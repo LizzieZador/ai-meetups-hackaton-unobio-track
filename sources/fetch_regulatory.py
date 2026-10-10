@@ -86,6 +86,11 @@ def _query_cached(name_lower: str, limit: int) -> Optional[list[dict]]:
 def _build_record(name: str, app: dict, today: str) -> Optional[dict]:
     app_number = app.get("application_number", "") or ""
     sponsor = app.get("sponsor_name", "") or ""
+    # sponsor_name is openFDA's (often abbreviated) application holder, e.g.
+    # "BRISTOL"; manufacturer_name is the full labeler name on the label
+    # itself, e.g. "Mirati Therapeutics, Inc" — after an acquisition the two
+    # legitimately differ, so both are kept rather than one replacing the other.
+    labeler = ((app.get("openfda") or {}).get("manufacturer_name") or [""])[0]
     products = app.get("products", []) or []
     brand_names = sorted({p.get("brand_name") for p in products if p.get("brand_name")})
     routes = sorted({p.get("route") for p in products if p.get("route")})
@@ -133,6 +138,7 @@ def _build_record(name: str, app: dict, today: str) -> Optional[dict]:
         "drug_name": name,
         "application_number": app_number,
         "sponsor": sponsor,
+        "labeler": labeler,
         "brand_names": brand_names,
         "routes": routes,
         "dosage_forms": dosage_forms,

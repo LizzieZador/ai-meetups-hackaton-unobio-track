@@ -198,20 +198,51 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
     raise RuntimeError(f"Gemini request failed ({last_error})")
 
 
+_OPENAI_JSON_OBJECT_INSTRUCTION = (
+    '\n\nRespond with a single JSON object of the exact shape {"claims": [...]} — the array '
+    "holds the claim objects described above, each one concise and structured (no filler "
+    "sentences inside a claim's own text). Valid JSON only: no prose before or after it, no "
+    "markdown code fences."
+)
+
+
 def _ask_openai(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> list[dict]:
     """Call the team's OpenAI-compatible gateway (ChatGPT / gpt-6-luna) — given
     top priority over Gemini/Claude. Raises on any failure so the caller can
     fall back to the next provider; a reply that arrives but isn't usable JSON
-    just yields [] (that agent contributes no claims)."""
+    just yields [] (that agent contributes no claims).
+
+    response_format=json_object is OpenAI's own structured-output guarantee
+    (the same contract Gemini already gets via responseMimeType=application/json
+    below) — it forces a syntactically valid JSON object back, which is also
+    why the instruction appended here asks for an OBJECT ({"claims": [...]})
+    rather than a bare array: that mode requires a top-level object. Every
+    agent's own system prompt is untouched — this wrapping only applies on
+    this one provider's call, never on the Gemini/Claude fallback path, so
+    existing prompts don't need to know which provider ends up serving them.
+    """
     client = _get_openai_client(api_key)
-    response = client.chat.completions.create(
-        model=MODEL_OPENAI,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_completion_tokens=max_tokens,
-    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt + _OPENAI_JSON_OBJECT_INSTRUCTION},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_OPENAI,
+            messages=messages,
+            max_completion_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+    except Exception as e:
+        # Some OpenAI-compatible gateways proxy an older/narrower API surface
+        # that 400s on response_format itself — that's a reason to retry
+        # without it, not a reason to give up on ChatGPT for this call and
+        # silently fall back to Gemini/Claude every single time.
+        if "response_format" not in str(e).lower():
+            raise
+        response = client.chat.completions.create(
+            model=MODEL_OPENAI, messages=messages, max_completion_tokens=max_tokens
+        )
     usage = response.usage
     _usage_log.append({
         "model": MODEL_OPENAI,

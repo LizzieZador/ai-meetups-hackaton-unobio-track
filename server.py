@@ -19,7 +19,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from assistant import ask_assistant
 from cards import build_cards
 from pipeline import run_pipeline
-from raw_data import extract_analogs
+from raw_data import extract_competitors
 from schema import Claim
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -43,17 +43,26 @@ def split_query(query: str) -> tuple[str, str]:
     showing as "PCSK9 / hypercholesterolemia in PCSK9 / hypercholesterolemia"
     in the report head) instead of actually splitting it.
     """
-    parts = re.split(r"\s*\|\s*|\s*/\s*|\s+(?:for|in)\s+", query, maxsplit=1, flags=re.I)
-    if len(parts) == 2 and all(p.strip() for p in parts):
-        return parts[1].strip(), parts[0].strip()
-    return query, query
+    # Separators tried in priority order, not as one alternation: a single regex
+    # splits at the LEFTMOST match of any of them, so "PD-1/PD-L1 | NSCLC" or
+    # "CDK4/6 inhibitor for breast cancer" were cut at the slash inside the
+    # target name. "/" now only counts as a separator with whitespace on both
+    # sides — slashes inside names (PD-1/PD-L1, CDK4/6, HER2/neu) never do.
+    # "×" ("BTK inhibitor × multiple sclerosis") is a common way to write a
+    # target-indication pair; a plain "x" only counts with spaces on both sides.
+    for sep in (r"\s*\|\s*", r"\s*×\s*", r"\s+(?:for|in)\s+", r"\s+/\s+", r"\s+x\s+"):
+        parts = re.split(sep, query, maxsplit=1, flags=re.I)
+        if len(parts) == 2 and all(p.strip() for p in parts):
+            return parts[1].strip(), parts[0].strip()
+    cleaned = re.sub(r"^[\s|/×]+|[\s|/×]+$", "", query) or query
+    return cleaned, cleaned
 
 
 def build_report(indication: str, mechanism: str, claims: list[Claim], cost: dict, sources: dict) -> dict:
     verdict_claim = next(
         (c for c in claims if c.section == "recommendation" and c.claim in VERDICTS), None
     )
-    analogs = extract_analogs(sources)
+    analogs = extract_competitors(sources)
     return {
         "indication": indication,
         "mechanism": mechanism,

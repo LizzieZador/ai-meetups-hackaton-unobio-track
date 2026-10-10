@@ -205,6 +205,25 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .assistant-msg .who { display:block; font-size:11px; font-weight:700; letter-spacing:.03em;
                       text-transform:uppercase; color:var(--muted); margin-bottom:2px; }
 .assistant-msg.note { color:var(--muted); font-style:italic; }
+.chat-history { flex:none; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+.chat-history-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.chat-history-title { font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }
+.chat-new { background:none; border:1px solid var(--line); color:var(--accent); border-radius:5px; padding:3px 8px; font-size:12px; font-weight:600; cursor:pointer; }
+.chat-new:hover { border-color:var(--accent); }
+.chat-list { list-style:none; margin:0; padding:0; max-height:116px; overflow-y:auto; }
+.chat-list li { position:relative; padding:6px 26px 6px 8px; border-radius:6px; cursor:pointer; }
+.chat-list li:not(.empty-item):hover { background:var(--bg); }
+.chat-list li.active { background:var(--tint); }
+.chat-list li.empty-item { cursor:default; color:var(--muted); font-size:13px; padding:4px 8px; }
+.chat-title { display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-when { display:block; font-size:11px; color:var(--muted); }
+.chat-delete { position:absolute; top:50%; right:4px; transform:translateY(-50%); background:none; border:0; color:var(--muted);
+               font-size:16px; line-height:1; padding:2px 5px; border-radius:4px; cursor:pointer; opacity:0; }
+.chat-list li:hover .chat-delete, .chat-delete:focus-visible { opacity:1; }
+.chat-delete:hover { color:var(--red); background:var(--bg); }
+.assistant-p { margin:0 0 4px; }
+.assistant-bullets { margin:2px 0 0; padding-left:18px; }
+.assistant-bullets li { margin:2px 0; }
 .assistant-search { background:var(--tint); border-radius:6px; padding:8px 10px; }
 .assistant-search-terms { display:block; font-weight:600; font-size:14px; margin:2px 0 8px; }
 .assistant-search-terms .label { font-weight:400; color:var(--muted); }
@@ -291,6 +310,7 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .card-table th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
 .card-table tr:nth-child(even) td { background:var(--bg); }
 .card-table .na { color:var(--muted); font-style:italic; }
+.card-table .row-num { width:1%; white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; text-align:right; }
 .items-below-table { margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
 
 /* composite card (risk & regulatory diligence) */
@@ -355,6 +375,14 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 /* one item inside a card */
 .item { padding:11px 0; border-top:1px solid var(--line); font-size:15px; line-height:1.45; }
 .item:first-child { border-top:0; padding-top:0; }
+.claim-group { margin-bottom:14px; }
+.claim-group:last-child { margin-bottom:0; }
+.claim-group-title { margin:0 0 6px; font-size:13px; font-weight:700; color:var(--text); }
+.claim-subgroup { margin:0 0 8px; }
+.claim-subhead { margin:6px 0 2px; font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }
+.claim-subhead.evidence { color:var(--green); }
+.claim-subhead.inference { color:var(--amber); }
+.claim-subhead .count { font-weight:600; color:var(--muted); margin-left:4px; }
 .badge { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.04em; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; }
 .badge.evidence { background:var(--green-tint); color:var(--green); }
 .badge.inference { background:var(--amber-tint); color:var(--amber); }
@@ -372,14 +400,16 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .modal-box .sources-list { margin:22px 0 0; padding:16px 0 0; border-top:1px solid var(--line); }
 .modal-box .sources-list h3 { margin:0 0 8px; font-size:14px; font-weight:600; }
 .modal-box .sources-list ul { margin:0; padding-left:18px; line-height:1.7; font-size:14px; }
+.source-row-tag { display:inline-block; font-size:11px; font-weight:700; color:var(--muted); background:var(--tint); border-radius:4px; padding:1px 6px; margin-right:6px; vertical-align:middle; }
 
 .cost { margin-top:28px; color:var(--muted); font-size:13px; text-align:center; }
 
-/* Helix colours are aliases of existing tokens, never new hues, so the glass
-   model cannot drift off the scheme. face = the solid glass body, rim = its
-   polished bevelled edges, glint = highlights and the reflected studio light,
-   tint = a breath of accent glowing inside. Light: teal glass with white-polished
-   edges. Dark: slate glass (--muted is the surfaces' own hue family) whose edges glow. */
+/* Helix colours are aliases of existing tokens, never new hues, so the solid
+   glass model cannot drift off the scheme. face = the solid glass body, rim =
+   its polished bevelled edges, glint = highlights and the reflected studio
+   light, tint = a breath of accent glowing inside. Light: teal glass with
+   white-polished edges. Dark: slate glass (--muted is the surfaces' own hue
+   family) whose edges glow. */
 :root { --helix-face:var(--accent); --helix-rim:var(--card); --helix-glint:var(--card); --helix-tint:var(--accent); }
 :root[data-theme="dark"] { --helix-face:var(--muted); --helix-rim:var(--text); --helix-glint:var(--text); --helix-tint:var(--accent); }
 

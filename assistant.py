@@ -64,7 +64,11 @@ _EXTRACT_LINE = re.compile(r"MECHANISM:\s*(.+?)\s*\|\s*INDICATION:\s*(.+?)\s*$",
 def _extract_lookup_terms(message: str, history_text: str) -> tuple[str | None, str | None]:
     prompt = (f"Recent conversation:\n{history_text}\n\n" if history_text else "") + f"Message: {message}"
     try:
-        raw = ask_assistant_reply(_EXTRACT_SYSTEM_PROMPT, prompt, max_tokens=60)
+        # 300, not 60: a reasoning-tier model can spend its entire completion
+        # budget on hidden reasoning before writing the one visible line this
+        # call expects, which came back as nothing at all at a 60-token
+        # ceiling — silently disabling live lookups for every message.
+        raw = ask_assistant_reply(_EXTRACT_SYSTEM_PROMPT, prompt, max_tokens=300)
     except Exception:
         return None, None
     m = _EXTRACT_LINE.search(raw)
@@ -171,7 +175,18 @@ SEARCH: KRAS G12C | Non-Small Cell Lung Cancer
 Never use placeholder words like "mechanism" or "indication" in that line. Omit the line \
 entirely when you have nothing concrete to propose.
 
-Keep replies short (2-5 sentences) and plain. Never fabricate citations, trial IDs, or numbers."""
+Answer format — structured, not a wall of text:
+- Open with one direct sentence that actually answers the question (not a restatement of it).
+- If you're citing more than one fact, put each on its own short line starting with "- ", not \
+folded into a paragraph. A single fact can stay as the opening sentence alone.
+- Every fact-bearing line names what it's grounded in in parentheses, e.g. "(REPORT_CONTEXT: \
+Pipeline card)" or "(LIVE_LOOKUP: PubMed)" — a reader should never have to guess where a number \
+came from.
+- No filler: no "Great question!", no restating the site description unless the user actually \
+asked how the site works, no hedging disclaimers beyond the one honest "not available" case in \
+rule 2 above.
+- Total length: the opening sentence plus at most 3 bullet lines. Never fabricate citations, \
+trial IDs, or numbers."""
 
 
 _MAX_REPORT_CONTEXT_CHARS = 400_000  # a real 12-card report runs ~150-250KB; this leaves real headroom
@@ -221,7 +236,12 @@ def ask_assistant(message: str, history: list[dict], report: dict | None) -> dic
         + (f"Recent conversation:\n{history_text}\n\n" if history_text else "")
         + f"User: {message}"
     )
-    raw = ask_assistant_reply(SYSTEM_PROMPT, user_prompt)
+    # 1400, not the 700 default: a reasoning-tier ChatGPT model spends tokens on
+    # hidden reasoning before the visible reply starts, so a tight completion
+    # ceiling risks the same "comes back completely empty" failure mode the
+    # main pipeline hit — this budget is headroom for that, not a target for
+    # the visible answer's length (the prompt's own "Answer format" rules cap that).
+    raw = ask_assistant_reply(SYSTEM_PROMPT, user_prompt, max_tokens=1400)
 
     search = None
     m = _SEARCH_LINE.search(raw)
@@ -232,5 +252,8 @@ def ask_assistant(message: str, history: list[dict], report: dict | None) -> dic
         if "<" not in s_mechanism and "<" not in s_indication and s_mechanism and s_indication:
             search = {"mechanism": s_mechanism, "indication": s_indication}
         raw = raw[: m.start()].rstrip()
+    # A "SEARCH: None" / "SEARCH: N/A" line (no "|", so _SEARCH_LINE never
+    # matches it) used to leak into the visible reply — drop any leftover one.
+    raw = re.sub(r"(?im)^\s*SEARCH:.*$", "", raw).rstrip()
 
     return {"reply": raw or "I'm not sure how to answer that — try rephrasing?", "search": search}

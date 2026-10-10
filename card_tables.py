@@ -19,6 +19,7 @@ also rendered as a list under the table — only when the table draws from a
 *different* raw data bucket than those claims (so nothing is ever shown
 twice). It defaults to False (the table already IS those claims, reshaped).
 """
+import datetime
 import re
 from collections import Counter
 
@@ -45,6 +46,28 @@ def _format_fda_date(raw: str | None) -> str | None:
     if raw and len(raw) == 8 and raw.isdigit():
         return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
     return raw
+
+
+def _orange_book_by_appl(sources: dict) -> dict[str, dict]:
+    return {(r.get("application_number") or ""): r for r in sources.get("orange_book", [])}
+
+
+def _sponsor_display(reg: dict | None, orange_book: dict[str, dict] | None = None) -> str:
+    """Application holder's name. The FDA Orange Book's Applicant_Full_Name
+    ("BRISTOL MYERS SQUIBB CO") wins when present — openFDA's sponsor_name is
+    often abbreviated ("BRISTOL"). Without it: the openFDA holder, plus the
+    label's manufacturer when that's a different company (e.g. after an
+    acquisition). All verbatim FDA fields."""
+    if not reg:
+        return NA
+    ob = (orange_book or {}).get(reg.get("application_number") or "")
+    sponsor = ((ob or {}).get("applicant_full_name") or reg.get("sponsor") or "").strip()
+    labeler = (reg.get("labeler") or "").strip()
+    if not sponsor:
+        return labeler or NA
+    if labeler and labeler.split()[0].lower() not in sponsor.lower():
+        return f"{sponsor} (label: {labeler})"
+    return sponsor
 
 
 def _short(text: str, limit: int = 130) -> str:
@@ -80,13 +103,18 @@ def build_unmet_need_view(claims_by_section: dict, sources: dict, analogs: list[
     # shown twice under two different Points.
     used: set[int] = set()
 
-    def bucket(keywords: tuple[str, ...]) -> str:
+    def bucket(keywords: tuple[str, ...]):
+        """Joined claim text for this Point, linked to the first underlying
+        evidence claim's source (so this row — like every other table's —
+        can be cross-referenced against the card's Sources list)."""
         matches = [c for c in pool if id(c) not in used and any(k in c.claim.lower() for k in keywords)]
         if not matches:
             return NA
         selected = matches[:2]
         used.update(id(c) for c in selected)
-        return " ".join(c.claim.strip().rstrip(".") + "." for c in selected)
+        text = " ".join(c.claim.strip().rstrip(".") + "." for c in selected)
+        url = next((c.url for c in selected if c.type == "evidence" and c.url), None)
+        return _cell(text, url)
 
     rows = [
         {"Point": "Current Standard of Care", "Content": bucket(_SOC_KEYWORDS)},
@@ -368,21 +396,55 @@ def build_patient_population_view(claims_by_section: dict, sources: dict, analog
     inference_items.sort(key=lambda i: len(i.get("claim") or ""), reverse=True)
     inference = inference_items[:_MAX_INFERENCE_ITEMS]
 
-    return {"view": "list", "items": non_inference + inference}
+    # Financials: the deterministic rNPV scenarios (financials.py, stamped onto
+    # a "recommendation"-section claim by the chair) and the capital needed to
+    # reach the next milestone — previously shown on no card at all. Grouped
+    # under one "Financials" label and exempt from the inference cap above:
+    # these are the investment model's own outputs, not filler assumptions.
+    financial_items = [
+        {"kind": "claim", **c.to_dict(), "group": "Financials"}
+        for c in claims_by_section.get("recommendation", [])
+        if (c.claim or "").lower().startswith("rnpv")
+    ] + [
+        {"kind": "claim", **c.to_dict(), "group": "Financials"}
+        for c in claims_by_section.get("capital_required", [])
+    ]
+
+    return {"view": "list", "items": non_inference + inference + financial_items}
+
+
+_UNCURATED = "Not curated in Open Targets"
+
+
+def _analog_moa(d: dict) -> str:
+    if d.get("mechanism"):
+        return d["mechanism"]
+    if d.get("origin") == "trial_registry":
+        trials = ", ".join(d.get("nct_ids") or [])
+        return f"{_UNCURATED} — trial intervention ({trials})" if trials else _UNCURATED
+    return NA
+
+
+def _analog_target(d: dict) -> str:
+    """The drug's own curated targets (Open Targets drug profile). A drug with
+    no curated mechanism yet says so — the query string is never reused as a
+    stand-in (that labelled pan-RAS salirasib as "KRAS G12C")."""
+    if d.get("targets"):
+        return ", ".join(d["targets"])
+    if "origin" in d:
+        return _UNCURATED
+    return NA
 
 
 # ---------------------------------------------------------------------------
 # Card 5 — Competitive landscape: Drug / Clinical Stage / Target / Modality /
 # Lead Sponsor / MoA / Source.
-# Drug, Clinical Stage, MoA come from the Open Targets analog list (Clinical
-# Stage was already fetched but not shown before). Target is the report's own
-# query mechanism — every analog on this card is, by definition, an analog on
-# that one target, so it's accurate per row, not a per-drug fact anyone had
-# to look up. Lead Sponsor is a cross-reference against the openFDA
-# (regulatory) records already fetched for those same drug names (header
-# relabeled from "Labeler" per the team's decision — same underlying data).
-# Source links to that same openFDA record. Modality has no source anywhere
-# in the pipeline (checked every fetcher) — "Not available", not a guess.
+# Rows: Open Targets' target-level analogs, plus registry competitors that
+# passed sources/fetch_drug_profiles.py's verification (exact Open Targets
+# name match; curated on this target, or no mechanism curated yet). Target,
+# Modality (drugType) and stage come from each drug's own Open Targets
+# profile. Lead Sponsor: openFDA cross-reference, full name from the Orange
+# Book when listed. Source: the openFDA record, else the Open Targets drug page.
 # The card's own competitive_landscape claims are a different, complementary
 # narrative, so they're kept below (show_claims_below=True).
 # ---------------------------------------------------------------------------
@@ -392,19 +454,24 @@ def build_competitive_landscape_view(claims_by_section: dict, sources: dict, ana
         for r in sources.get("regulatory", [])
         if r.get("drug_name")
     }
+    orange_book = _orange_book_by_appl(sources)
     rows = []
     for d in analogs:
         name = d.get("name") or NA
         reg = reg_by_name.get((d.get("name") or "").strip().lower())
-        lead_sponsor = reg.get("sponsor") if reg and reg.get("sponsor") else NA
-        source_cell = _cell("openFDA Drugs@FDA", reg.get("url")) if reg and reg.get("url") else NA
+        if reg and reg.get("url"):
+            source_cell = _cell("openFDA Drugs@FDA", reg["url"])
+        elif d.get("profile_url"):
+            source_cell = _cell("Open Targets drug profile", d["profile_url"])
+        else:
+            source_cell = NA
         rows.append({
             "Drug": name,
             "Clinical Stage": d.get("stage") or NA,
-            "Target": mechanism or NA,
-            "Modality": NA,
-            "Lead Sponsor": lead_sponsor,
-            "MoA": d.get("mechanism") or NA,
+            "Target": _analog_target(d),
+            "Modality": d.get("drug_type") or NA,
+            "Lead Sponsor": _sponsor_display(reg, orange_book),
+            "MoA": _analog_moa(d),
             "Source": source_cell,
         })
     return {
@@ -434,17 +501,19 @@ def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[di
         for r in sources.get("regulatory", [])
         if r.get("drug_name")
     }
+    orange_book = _orange_book_by_appl(sources)
     drug_rows = []
     for d in analogs:
         name = d.get("name") or ""
         reg = reg_by_name.get(name.strip().lower())
         first_approval = _format_fda_date(reg.get("first_approval_date") if reg else None)
+        link = (reg or {}).get("url") or d.get("profile_url")
         drug_rows.append({
-            "Drug": name or NA,
+            "Drug": _cell(name, link) if link else (name or NA),
             "Clinical Stage": d.get("stage") or NA,
-            "MoA": d.get("mechanism") or NA,
+            "MoA": _analog_moa(d),
             "Status": f"Approved ({first_approval})" if first_approval else NA,
-            "Sponsor": (reg.get("sponsor") if reg else None) or NA,
+            "Sponsor": _sponsor_display(reg, orange_book),
         })
 
     trial_rows = [
@@ -469,17 +538,64 @@ def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[di
     }
 
 
+# Generic FDA definitions of each Orange Book exclusivity code family (true of
+# the code itself, not a claim about any drug) — matched by prefix, since the
+# file carries numbered variants like "ODE-352", "ODE*", "I-962".
+_EXCLUSIVITY_EXPLANATIONS = [
+    ("NCE", "New Chemical Entity: 5 years from approval in which FDA cannot accept a generic application (4 if it challenges a patent)."),
+    ("ODE", "Orphan Drug Exclusivity: 7 years in which FDA cannot approve the same drug for the same orphan indication."),
+    ("NPP", "New Patient Population: 3 years for a newly approved patient population."),
+    ("NP", "New Product: 3 years for a change backed by new clinical studies (e.g. a new formulation)."),
+    ("I-", "New Indication: 3 years for a newly approved use backed by new clinical studies."),
+    ("D-", "New Dosing Schedule: 3 years for a newly approved dosing regimen."),
+    ("M-", "Miscellaneous: 3 years for another FDA-recognised change backed by new clinical studies."),
+    ("PED", "Pediatric: 6 months added to existing patents and exclusivities for completed pediatric studies."),
+    ("GAIN", "Qualified Infectious Disease Product: 5 additional years of exclusivity."),
+    ("CGT", "Competitive Generic Therapy: 180 days for the first approved generic."),
+]
+
+
+def _exclusivity_meaning(code: str) -> str:
+    code = (code or "").upper()
+    return next((text for prefix, text in _EXCLUSIVITY_EXPLANATIONS if code.startswith(prefix)), NA)
+
+
+def _term_status(expires: str | None) -> str:
+    """Active/Expired relative to today — the number an investor actually needs."""
+    if not expires:
+        return NA
+    try:
+        end = datetime.date.fromisoformat(expires)
+    except ValueError:
+        return NA
+    days = (end - datetime.date.today()).days
+    if days < 0:
+        return "Expired"
+    return f"Active ({days / 365.25:.1f} yrs left)"
+
+
+def _patent_covers(p: dict) -> str:
+    parts = []
+    if p.get("drug_substance"):
+        parts.append("Compound")
+    if p.get("drug_product"):
+        parts.append("Formulation")
+    if p.get("use_code"):
+        parts.append(f"Method of use ({p['use_code']})")
+    return ", ".join(parts) or NA
+
+
 # ---------------------------------------------------------------------------
-# Card 7 — Patent & IP review: Lens.org fields plus Drug / Route of
-# administration / Expiration date. Drug is the patent's own matched_term
-# (the name it was searched for). Route comes from a cross-reference against
-# the same openFDA (regulatory) records card 5 uses for Lead Sponsor — Lens
-# has no route data, openFDA does (now captured, see fetch_regulatory.py).
-# Expiration date: checked live against Lens's API — its legal_status object
-# carries only a filing-date calculation log and patent_status (PENDING/
-# GRANTED/etc.), no expiration/term field at all, so this is honestly "Not
-# available" rather than a guessed filing-date-plus-20-years estimate (patent
-# term extensions/adjustments make that kind of guess unreliable anyway).
+# Card 7 — Patent & IP review, three stacked tables:
+#   1. US patents from the FDA Orange Book — the patents an NDA holder listed
+#      for the approved drug, each with its expiration date and Active/Expired
+#      status (Lens.org has no term field at all, so these are the only real
+#      expiration dates available; never a filing-date-plus-20-years guess).
+#   2. Regulatory exclusivities from the Orange Book (NCE, orphan, ...) — the
+#      other half of when generics can enter.
+#   3. Lens.org patent filings — worldwide, mostly pending applications. Route
+#      comes from the openFDA cross-reference. Expiration is filled only when
+#      the filing's number is itself an Orange Book-listed US patent.
 # ---------------------------------------------------------------------------
 def build_patent_ip_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
     reg_by_name = {
@@ -487,35 +603,76 @@ def build_patent_ip_view(claims_by_section: dict, sources: dict, analogs: list[d
         for r in sources.get("regulatory", [])
         if r.get("drug_name")
     }
-    rows = []
+    patent_rows, exclusivity_rows = [], []
+    ob_expiry: dict[str, str] = {}
+    for ob in sources.get("orange_book", []):
+        drug = (ob.get("drug_name") or NA).title()
+        if ob.get("trade_name"):
+            drug = f"{drug} ({ob['trade_name'].title()})"
+        holder = ob.get("applicant_full_name") or NA
+        for p in ob.get("patents", []):
+            ob_expiry[p["patent_no"]] = p.get("expires")
+            patent_rows.append({
+                "Drug": drug,
+                "US Patent #": _cell(p["patent_no"], ob.get("url")),
+                "Covers": _patent_covers(p),
+                "Expiration Date": p.get("expires") or NA,
+                "Status": _term_status(p.get("expires")),
+                "Holder": holder,
+            })
+        for e in ob.get("exclusivities", []):
+            exclusivity_rows.append({
+                "Drug": drug,
+                "Exclusivity": _cell(e.get("code") or NA, ob.get("url")),
+                "What It Means": _exclusivity_meaning(e.get("code")),
+                "Expires": e.get("expires") or NA,
+                "Status": _term_status(e.get("expires")),
+            })
+
+    lens_rows = []
     for r in sources.get("patents", []):
         reg = reg_by_name.get((r.get("matched_term") or "").strip().lower())
         routes = reg.get("routes") if reg else None
-        rows.append({
+        digits = re.sub(r"\D", "", r.get("doc_number") or "")
+        lens_rows.append({
             "Drug": r.get("matched_term") or NA,
             "Jurisdiction": r.get("jurisdiction") or NA,
             "Doc #": _cell(r.get("doc_number"), r.get("url")),
             "Applicants": ", ".join(r.get("applicants") or []) or NA,
             "Status": r.get("patent_status") or NA,
             "Route of Administration": ", ".join(routes) if routes else NA,
-            "Expiration Date": NA,
+            "Expiration Date": (ob_expiry.get(digits) if r.get("jurisdiction") == "US" else None) or NA,
         })
+
     return {
-        "view": "table",
-        "columns": [
-            "Drug", "Jurisdiction", "Doc #", "Applicants", "Status",
-            "Route of Administration", "Expiration Date",
+        "view": "composite",
+        "sections": [
+            {
+                "kind": "table", "title": "US Patents — FDA Orange Book",
+                "columns": ["Drug", "US Patent #", "Covers", "Expiration Date", "Status", "Holder"],
+                "rows": patent_rows,
+            },
+            {
+                "kind": "table", "title": "Regulatory Exclusivity — FDA Orange Book",
+                "columns": ["Drug", "Exclusivity", "What It Means", "Expires", "Status"],
+                "rows": exclusivity_rows,
+            },
+            {
+                "kind": "table", "title": "Patent Filings — Lens.org",
+                "columns": [
+                    "Drug", "Jurisdiction", "Doc #", "Applicants", "Status",
+                    "Route of Administration", "Expiration Date",
+                ],
+                "rows": lens_rows,
+            },
         ],
-        "rows": rows,
-        "show_claims_below": False,
     }
 
 
 # ---------------------------------------------------------------------------
 # Card 8 — Clinical trial design intelligence: raw ClinicalTrials.gov facts,
-# tabulated, with a Drug column between NCT ID and Phase — the report's own
-# query mechanism (the intervention these trials were actually searched
-# for), same accurate-by-construction pattern as card 5's Target column. The
+# tabulated, with a Drug column between NCT ID and Phase — each trial's own
+# registered drug/biologic interventions from ClinicalTrials.gov. The
 # card's own clinical_development_plan claims (proposed trial design, PTRS,
 # biomarker strategy) are a different, complementary narrative built from
 # these facts, not a duplicate of them — kept below the table.
@@ -524,9 +681,13 @@ def build_trial_design_view(claims_by_section: dict, sources: dict, analogs: lis
     rows = []
     for r in sources.get("clinicaltrials", []):
         enrollment = r.get("enrollmentCount")
+        # The registry's own intervention names (e.g. "Calderasib", "JDQ443") —
+        # previously this column repeated the queried target ("KRAS G12C") on
+        # every row, which is a target, not a drug. Records cached before the
+        # fetcher captured interventions show "Not available" until refetched.
         rows.append({
             "NCT ID": _cell(r.get("nctId") or NA, r.get("url")),
-            "Drug": mechanism or NA,
+            "Drug": ", ".join(r.get("interventions") or []) or NA,
             "Phase": ", ".join(r.get("phases") or []) or NA,
             "Status": r.get("overallStatus") or NA,
             "Enrollment": enrollment if enrollment is not None else NA,
@@ -635,9 +796,10 @@ def build_risk_diligence_view(claims_by_section: dict, sources: dict, analogs: l
     # isn't silently missing), with Designation/What It Means as "Not
     # available" rather than skipped.
     green_rows = []
+    orange_book = _orange_book_by_appl(sources)
     for r in sources.get("regulatory", []):
         drug = r.get("drug_name") or NA
-        sponsor = r.get("sponsor") or NA
+        sponsor = _sponsor_display(r, orange_book)
         first_approval = _cell(_format_fda_date(r.get("first_approval_date")) or NA, r.get("url"))
         designations = r.get("designations") or []
         if not designations:
@@ -706,6 +868,8 @@ def _opentargets_stage_rank(stage: str | None) -> int:
     stage = (stage or "").upper()
     if stage == "APPROVAL":
         return len(_STAGES) - 1
+    if stage == "PREAPPROVAL":  # filed for approval — Phase 3 is complete, not yet approved
+        return len(_STAGES) - 2
     m = re.match(r"PHASE_(\d)", stage)
     return int(m.group(1)) - 1 if m else -1
 

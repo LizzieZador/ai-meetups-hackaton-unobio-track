@@ -53,7 +53,7 @@
                aria-label="Mechanism and indication">
         <button id="welcome-go" type="submit" disabled>Evaluate</button>
       </form>
-      <p class="welcome-hint">Separate mechanism and indication with &ldquo;|&rdquo;, &ldquo;/&rdquo;, &ldquo;for&rdquo; or &ldquo;in&rdquo;.</p>
+      <p class="welcome-hint">Separate mechanism and indication with &ldquo;|&rdquo;, &ldquo;&times;&rdquo;, &ldquo;/&rdquo;, &ldquo;for&rdquo; or &ldquo;in&rdquo;.</p>
     </div>
   </div>
 
@@ -100,6 +100,13 @@
         <span>Assistant</span>
       </button>
       <div class="panel-body">
+        <div class="chat-history">
+          <div class="chat-history-head">
+            <span class="chat-history-title">Chat history</span>
+            <button type="button" id="assistant-new-chat" class="chat-new">+ New chat</button>
+          </div>
+          <ul id="assistant-chats" class="chat-list"></ul>
+        </div>
         <div id="assistant-log" class="assistant-log hidden" aria-live="polite"></div>
         <form id="assistant-form" class="assistant-form">
           <input id="assistant-input" type="text" autocomplete="off"

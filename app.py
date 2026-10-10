@@ -8,7 +8,7 @@ import streamlit as st
 
 from pipeline import run_pipeline
 from quick_summary import build_quick_summary
-from raw_data import SOURCE_ORDER, SOURCE_TITLES, extract_analogs
+from raw_data import SOURCE_ORDER, SOURCE_TITLES, extract_competitors
 from schema import SECTION_TITLES
 
 VERDICTS = {"Invest", "Conditional", "Do Not Invest"}
@@ -37,7 +37,7 @@ if submitted:
                 st.error(f"Pipeline failed: {e}")
                 st.stop()
 
-        analogs_preview = extract_analogs(sources)
+        analogs_preview = extract_competitors(sources)
         st.subheader("At a glance")
         st.caption("Plain-language summary, straight from the connected data sources")
         for row in build_quick_summary(claims, sources, analogs_preview):
@@ -73,7 +73,7 @@ if submitted:
                         st.markdown(f"**{link}** (accessed {item.get('date_accessed')})")
                         st.caption(item.get("raw_snippet", ""))
 
-        analogs = extract_analogs(sources)
+        analogs = extract_competitors(sources)
         with st.expander(f"Analogs / competing drugs — {len(analogs)}"):
             if not analogs:
                 st.write("_No known competing drugs on this target were found in Open Targets._")

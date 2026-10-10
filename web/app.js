@@ -173,7 +173,7 @@ function filledCount(report) {
 }
 
 function historyLabel(s) {
-  return `${s.mechanism} — ${s.indication}`;
+  return s.mechanism === s.indication ? s.mechanism : `${s.mechanism} — ${s.indication}`;
 }
 
 let lastActiveHistoryKey = null;
@@ -242,8 +242,55 @@ function renderItem(item) {
   }</span>${esc(item.claim)}<span class="meta">${meta}</span></div>`;
 }
 
+// Mirrors schema.SECTION_TITLES. A builder can override the label with
+// item.group (e.g. "Financials" for the rNPV claim, whose schema section is
+// "recommendation").
+const SECTION_LABELS = {
+  recommendation: "Recommendation",
+  scientific_thesis: "Scientific Thesis",
+  human_translation_thesis: "Human Translation",
+  clinical_development_plan: "Clinical Development Plan",
+  competitive_landscape: "Competitive Landscape",
+  commercial_opportunity: "Commercial Opportunity",
+  capital_required: "Capital Required",
+  key_risks: "Key Risks",
+  critical_unknowns: "Critical Unknowns",
+  diligence_questions: "Diligence Questions",
+};
+
+// Raw records first (under "Data"), then claims grouped by category, each
+// category split into its Evidence and Inference claims — so a reader never
+// has to scan badges to tell a sourced fact from an analyst judgement.
+function renderClaimGroups(items, parentTitle) {
+  const data = items.filter((i) => i.kind !== "claim");
+  const groups = new Map();
+  items
+    .filter((i) => i.kind === "claim")
+    .forEach((i) => {
+      const label = i.group || SECTION_LABELS[i.section] || "Other";
+      if (!groups.has(label)) groups.set(label, { evidence: [], inference: [] });
+      groups.get(label)[i.type === "evidence" ? "evidence" : "inference"].push(i);
+    });
+  const sub = (title, list, cls) =>
+    list.length
+      ? `<div class="claim-subgroup"><h5 class="claim-subhead ${cls}">${esc(title)} <span class="count">${list.length}</span></h5>${list
+          .map(renderItem)
+          .join("")}</div>`
+      : "";
+  let html = data.length ? sub("Data", data, "data") : "";
+  groups.forEach((g, label) => {
+    const showTitle = !(groups.size === 1 && parentTitle && parentTitle.toLowerCase() === label.toLowerCase());
+    html += `<div class="claim-group">${showTitle ? `<h4 class="claim-group-title">${esc(label)}</h4>` : ""}${sub(
+      "Evidence",
+      g.evidence,
+      "evidence"
+    )}${sub("Inference", g.inference, "inference")}</div>`;
+  });
+  return html;
+}
+
 function renderItems(card) {
-  if (card.items.length) return card.items.map(renderItem).join("");
+  if (card.items.length) return renderClaimGroups(card.items);
   return `<p class="placeholder">${
     card.wired ? "No results yet" : "No connected source yet"
   }</p>`;
@@ -252,7 +299,7 @@ function renderItems(card) {
 function renderClaimsOnly(card) {
   const claimItems = (card.items || []).filter((i) => i.kind === "claim");
   if (!claimItems.length) return "";
-  return `<div class="items-below-table">${claimItems.map(renderItem).join("")}</div>`;
+  return `<div class="items-below-table">${renderClaimGroups(claimItems)}</div>`;
 }
 
 function renderTableCell(value) {
@@ -264,15 +311,65 @@ function renderTableCell(value) {
   return `<span${isNA ? ' class="na"' : ""}>${esc(display)}</span>`;
 }
 
+// Every table gets a leading row number (card 2/Market sentiment never calls
+// this — it's a chart, rendered through renderGraphDataTable instead — so the
+// one card the user asked to leave alone is excluded automatically).
 function renderTable(card) {
   if (!card.rows || !card.rows.length) {
     return `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
   }
-  const head = `<tr>${card.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const head = `<tr><th class="row-num">#</th>${card.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
   const body = card.rows
-    .map((row) => `<tr>${card.columns.map((c) => `<td>${renderTableCell(row[c])}</td>`).join("")}</tr>`)
+    .map(
+      (row, i) =>
+        `<tr><td class="row-num">${i + 1}</td>${card.columns.map((c) => `<td>${renderTableCell(row[c])}</td>`).join("")}</tr>`
+    )
     .join("");
   return `<table class="card-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+// Maps a source URL to the row number(s) that cite it, so the Sources list in
+// the expanded view can say which row each source backs — scanning every
+// cell of every row for a {text,url} link, not just a specific column name,
+// since which column carries the link differs per card. Numbering restarts
+// at 1 per table; a composite card (more than one table, e.g. Pipeline's
+// Drug/Trial, Scientific evidence's 8 sections) prefixes the table's own
+// title so "#2" in two different tables is never ambiguous.
+function sourceRowTags(card) {
+  const tables = [];
+  if (card.view === "table" && card.rows) tables.push({ label: null, rows: card.rows });
+  else if (card.view === "composite" && card.sections) {
+    card.sections.filter((s) => s.kind === "table" && s.rows).forEach((s) => tables.push({ label: s.title, rows: s.rows }));
+  }
+  const multiTable = tables.length > 1;
+  // url -> table label -> sorted row numbers, rendered as compact ranges
+  // ("#1–6, 9") — several rows often share one source page (e.g. every
+  // Orange Book patent of a drug links to that drug's single listing).
+  const numsByUrl = {};
+  tables.forEach((t) => {
+    t.rows.forEach((row, i) => {
+      const label = multiTable && t.label ? t.label : "";
+      new Set(Object.values(row).filter((v) => v && typeof v === "object" && v.url).map((v) => v.url)).forEach((url) => {
+        const byLabel = (numsByUrl[url] = numsByUrl[url] || new Map());
+        if (!byLabel.has(label)) byLabel.set(label, []);
+        byLabel.get(label).push(i + 1);
+      });
+    });
+  });
+  const ranges = (nums) => {
+    const out = [];
+    nums.forEach((n) => {
+      const last = out[out.length - 1];
+      if (last && n === last[1] + 1) last[1] = n;
+      else out.push([n, n]);
+    });
+    return out.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ");
+  };
+  const tagsByUrl = {};
+  Object.entries(numsByUrl).forEach(([url, byLabel]) => {
+    tagsByUrl[url] = [...byLabel].map(([label, nums]) => `${label ? `${label} ` : ""}#${ranges(nums)}`);
+  });
+  return tagsByUrl;
 }
 
 function renderComposite(card) {
@@ -285,7 +382,7 @@ function renderComposite(card) {
         body = renderTable({ columns: sec.columns, rows: sec.rows, wired: true });
       } else {
         body = sec.items.length
-          ? sec.items.map(renderItem).join("")
+          ? renderClaimGroups(sec.items, sec.title)
           : '<p class="placeholder">No results yet</p>';
       }
       return `<div class="composite-section"><h3>${esc(sec.title)}</h3>${body}</div>`;
@@ -463,9 +560,14 @@ function renderCard(card) {
 
 function openCard(card) {
   if (!card) return;
+  const rowTags = sourceRowTags(card);
   const sources = card.sources.length
     ? `<div class="sources-list"><h3>Sources</h3><ul>${card.sources
-        .map((s) => `<li>${link(s.source, s.url)}${s.date_accessed ? ` <span class="meta">accessed ${esc(s.date_accessed)}</span>` : ""}</li>`)
+        .map((s) => {
+          const tags = s.url ? rowTags[s.url] : null;
+          const tagHtml = tags && tags.length ? `<span class="source-row-tag">${tags.map(esc).join(", ")}</span> ` : "";
+          return `<li>${tagHtml}${link(s.source, s.url)}${s.date_accessed ? ` <span class="meta">accessed ${esc(s.date_accessed)}</span>` : ""}</li>`;
+        })
         .join("")}</ul></div>`
     : "";
   $("modal-body").innerHTML = `${cardHeading(card)}
@@ -494,7 +596,11 @@ function show(report) {
   const c = report.cost || {};
   $("content").innerHTML = `
     <div class="report-head">
-      <h1>${esc(report.mechanism)} <span class="label">in</span> ${esc(report.indication)}</h1>
+      <h1>${
+        report.mechanism === report.indication
+          ? esc(report.mechanism)
+          : `${esc(report.mechanism)} <span class="label">in</span> ${esc(report.indication)}`
+      }</h1>
       ${
         v
           ? `<span class="verdict-wrap">
@@ -648,12 +754,32 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal
    search, which the user runs with one click rather than it firing silently. */
 let assistantHistory = []; // [{role: "user"|"assistant", text}], capped server-side too
 
+// The assistant answers in a short structured format (one sentence, then "- "
+// bullet lines, **bold** for key terms). Rendered as that small subset only,
+// and always escaped FIRST — model text never reaches innerHTML unescaped.
+function formatAssistantText(text) {
+  const inline = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const out = [];
+  let bullets = [];
+  const flush = () => {
+    if (bullets.length) out.push(`<ul class="assistant-bullets">${bullets.map((b) => `<li>${b}</li>`).join("")}</ul>`);
+    bullets = [];
+  };
+  String(text || "").split(/\r?\n/).forEach((line) => {
+    const m = line.match(/^\s*[-•*]\s+(.*)$/);
+    if (m) bullets.push(inline(m[1]));
+    else if (line.trim()) { flush(); out.push(`<p class="assistant-p">${inline(line.trim())}</p>`); }
+  });
+  flush();
+  return out.join("");
+}
+
 function appendAssistantMsg(who, text, cls) {
   const log = $("assistant-log");
   log.classList.remove("hidden");
   const div = document.createElement("div");
   div.className = cls ? `assistant-msg ${cls}` : "assistant-msg";
-  div.innerHTML = `<span class="who">${esc(who)}</span>${esc(text)}`;
+  div.innerHTML = `<span class="who">${esc(who)}</span>${formatAssistantText(text)}`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
   return div;
@@ -681,11 +807,112 @@ function updateAssistantSendEnabled() {
   $("assistant-send").disabled = !$("assistant-input").value.trim();
 }
 
+/* Chat history — every conversation with the assistant is kept (per browser,
+   localStorage) and listed above the chat, titled by its first question.
+   Pending "…" placeholders and error notes are never saved. */
+const CHATS_KEY = "unobio.chats";
+const MAX_CHATS = 30;
+let chats = loadChats(); // [{id, title, at, messages: [{who, text} | {search}], history}]
+let activeChatId = null;
+
+function loadChats() {
+  try {
+    const list = JSON.parse(localStorage.getItem(CHATS_KEY));
+    return Array.isArray(list) ? list.filter((c) => c && c.id && Array.isArray(c.messages)) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveChats() {
+  chats = chats.slice(0, MAX_CHATS);
+  try {
+    localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+  } catch (e) {
+    /* storage full or unavailable: chats just won't persist */
+  }
+}
+
+function activeChat() {
+  return chats.find((c) => c.id === activeChatId) || null;
+}
+
+function renderChatList() {
+  const ul = $("assistant-chats");
+  if (!chats.length) {
+    ul.innerHTML = '<li class="empty-item">No chats yet</li>';
+    return;
+  }
+  ul.innerHTML = "";
+  chats.forEach((c) => {
+    const li = document.createElement("li");
+    li.className = c.id === activeChatId ? "active" : "";
+    li.title = c.title;
+    li.innerHTML = `<span class="chat-title">${esc(c.title)}</span>
+      <span class="chat-when">${esc(whenLabel(c.at))}</span>
+      <button type="button" class="chat-delete" aria-label="Delete chat" title="Delete chat">&times;</button>`;
+    li.onclick = () => openChat(c.id);
+    li.querySelector(".chat-delete").onclick = (e) => {
+      e.stopPropagation();
+      chats = chats.filter((x) => x.id !== c.id);
+      saveChats();
+      if (c.id === activeChatId) newChat();
+      else renderChatList();
+    };
+    ul.appendChild(li);
+  });
+}
+
+function openChat(id) {
+  activeChatId = id;
+  const chat = activeChat();
+  const log = $("assistant-log");
+  log.innerHTML = "";
+  log.classList.toggle("hidden", !chat || !chat.messages.length);
+  (chat ? chat.messages : []).forEach((m) => (m.search ? appendAssistantSearch(m.search) : appendAssistantMsg(m.who, m.text)));
+  assistantHistory = chat ? chat.history || [] : [];
+  renderChatList();
+}
+
+function newChat() {
+  activeChatId = null;
+  assistantHistory = [];
+  $("assistant-log").innerHTML = "";
+  $("assistant-log").classList.add("hidden");
+  renderChatList();
+  $("assistant-input").focus();
+}
+
+function recordChatMessage(message) {
+  let chat = activeChat();
+  if (!chat) {
+    const first = message.text || "New chat";
+    chat = {
+      id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      title: first.length > 60 ? `${first.slice(0, 57)}…` : first,
+      at: Date.now(),
+      messages: [],
+      history: [],
+    };
+    activeChatId = chat.id;
+  }
+  chat.messages.push(message);
+  chat.history = assistantHistory;
+  chat.at = Date.now();
+  chats = [chat, ...chats.filter((c) => c.id !== chat.id)];
+  saveChats();
+  renderChatList();
+}
+
+$("assistant-new-chat").onclick = newChat;
+
 $("assistant-form").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("assistant-input").value.trim();
   if (!text) return;
   appendAssistantMsg("You", text);
+  recordChatMessage({ who: "You", text });
+  const chatId = activeChatId;
   $("assistant-input").value = "";
   updateAssistantSendEnabled();
   $("assistant-send").disabled = true;
@@ -699,9 +926,17 @@ $("assistant-form").onsubmit = async (e) => {
     const data = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
     pending.remove();
     if (!res.ok || data.error) throw new Error(data.error || `Server error (${res.status})`);
-    appendAssistantMsg("Assistant", data.reply);
-    assistantHistory = [...assistantHistory, { role: "user", text }, { role: "assistant", text: data.reply }].slice(-12);
-    if (data.search) appendAssistantSearch(data.search);
+    // The user may have switched chats while waiting: only paint the reply
+    // into the log if its own chat is still the one on screen.
+    if (activeChatId === chatId) {
+      appendAssistantMsg("Assistant", data.reply);
+      assistantHistory = [...assistantHistory, { role: "user", text }, { role: "assistant", text: data.reply }].slice(-12);
+      recordChatMessage({ who: "Assistant", text: data.reply });
+      if (data.search) {
+        appendAssistantSearch(data.search);
+        recordChatMessage({ search: data.search });
+      }
+    }
   } catch (err) {
     pending.remove();
     appendAssistantMsg("Assistant", err.message, "note");
@@ -710,6 +945,7 @@ $("assistant-form").onsubmit = async (e) => {
   }
 };
 $("assistant-input").oninput = updateAssistantSendEnabled;
+renderChatList();
 
 /* Welcome page <-> app. The overlay stays in the DOM and is moved in and out
    with one class, so both directions run the same transition. Its box matches
@@ -770,18 +1006,26 @@ $("home-btn").onclick = enterWelcome;
    rungs sit at fixed heights and visibly sweep round like a spiral staircase,
    which is what makes the rotation legible.
 
-   Why WebGL: the glass look is all per-pixel lighting, which Canvas 2D cannot
-   do. The model is opaque (like cast acrylic), so it reads as glass through its
-   surface instead of through transparency: a bevel along each ribbon edge (a
-   bright line with a thin dark band inside it, the way thick glass edges catch
-   light), a studio light strip reflected in the surface that slides across it
-   as the helix turns, edges brightening at grazing angles (Fresnel), sharp
-   specular glints, and a faint accent glow inside where the ribbon faces you.
-   Depth without transparency comes from aerial perspective: the far side of the
-   helix recedes toward the page colour. Geometry is built on the CPU each frame
-   (two ribbons on a cylinder plus the rungs) and painted back to front, which
-   is exactly right for opaque surfaces. Every colour comes from theme tokens
-   (--helix-* and --bg), re-read on a theme flip. */
+   Why the rungs are part of the body, not sticks laid over it. Three things:
+   - They are solid prisms swept along the radial direction, shaded by the same
+     shader as the ribbons, and they stop exactly on the ribbon's surface.
+   - The depth buffer is on, so a rung is occluded PER PIXEL where a ribbon is in
+     front of it. Sorting whole quads back to front (what this used to do) made a
+     rung jump in front of or behind a whole ribbon at once, which is precisely
+     what reads as a stick moving on its own.
+   - They cast real shadows onto the ribbons, so the junction has contact.
+
+   Shadows are a genuine shadow map: the model is rendered once from the light's
+   point of view into an off-screen depth texture, and the main pass compares
+   each fragment against it (3x3 PCF for a soft edge). The light is fixed in page
+   space while the model turns, so the shadows sweep across the form — the
+   strongest rotation cue available, and it also ties the rungs to the ribbons.
+
+   The glass look is all per-pixel lighting: a bevel along each ribbon edge, a
+   studio light strip reflected in the surface, Fresnel at grazing angles, sharp
+   specular glints, and a faint accent glow inside. Depth also comes from aerial
+   perspective: the far side recedes toward the page colour. Every colour comes
+   from theme tokens (--helix-* and --bg), re-read on a theme flip. */
 function readTokenRgb(probe, token) {
   probe.style.color = `var(${token})`;
   const m = getComputedStyle(probe).color.match(/[\d.]+/g);
@@ -804,22 +1048,60 @@ const HELIX_PERIOD_MS = 24000; // one full revolution
 const HELIX_FRAME_MS = 33;     // ~30 fps: plenty for a slow spin, half the GPU work of 60
 const HELIX_LIGHT = v3.norm([-0.45, -0.6, 0.66]); // upper left, in front of the page (y points down)
 const HELIX_RUNGS = 16;        // base pairs along the visible length (~10.5 per turn, as in DNA)
+const HELIX_SHADOW_SIZE = 1024;
+const HELIX_VERTEX_FLOATS = 11; // pos(2) depth(1) normal(3) near(1) edge(1) lightPos(3)
 const helixReducedMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-const helix = { gl: null, u: null, buf: null, angle: 0, last: 0, frame: 0, running: false };
+const helix = {
+  gl: null, main: null, shadow: null, buf: null,
+  fbo: null, shadowTex: null, shadowDepth: null,
+  angle: 0, last: 0, frame: 0, running: false,
+};
+
+/* Depth packed into RGBA8: WebGL1 cannot read a depth texture without an
+   extension, and this is supported everywhere. */
+const HELIX_DEPTH_GLSL = `
+vec4 packDepth(float d) {
+  vec4 enc = fract(vec4(1.0, 255.0, 65025.0, 16581375.0) * d);
+  enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
+  return enc;
+}
+float unpackDepth(vec4 c) {
+  return dot(c, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+}`;
+
+const HELIX_SHADOW_VS = `
+attribute vec3 a_light;   // light clip space: xy in -1..1, z as depth 0..1
+varying float v_depth;
+void main() {
+  v_depth = a_light.z;
+  gl_Position = vec4(a_light.xy, a_light.z * 2.0 - 1.0, 1.0);
+}`;
+
+const HELIX_SHADOW_FS = `
+precision mediump float;
+varying float v_depth;
+${HELIX_DEPTH_GLSL}
+void main() {
+  gl_FragColor = packDepth(clamp(v_depth, 0.0, 1.0));
+}`;
 
 const HELIX_VS = `
 attribute vec2 a_pos;     // clip space, projected on the CPU
+attribute float a_depth;  // NDC depth, so the depth buffer can sort per pixel
 attribute vec3 a_normal;  // surface normal; z points at the viewer
 attribute float a_near;   // 0 = far side of the helix, 1 = nearest
 attribute float a_edge;   // -1 .. 1 across the ribbon (or rung) width
+attribute vec3 a_light;   // this vertex in the shadow map's space
 varying vec3 v_normal;
 varying float v_near;
 varying float v_edge;
+varying vec3 v_light;
 void main() {
   v_normal = a_normal;
   v_near = a_near;
   v_edge = a_edge;
-  gl_Position = vec4(a_pos, 0.0, 1.0);
+  v_light = a_light;
+  gl_Position = vec4(a_pos, a_depth, 1.0);
 }`;
 
 const HELIX_FS = `
@@ -827,12 +1109,36 @@ precision mediump float;
 varying vec3 v_normal;
 varying float v_near;
 varying float v_edge;
+varying vec3 v_light;
 uniform vec3 u_face;   // glass body
 uniform vec3 u_rim;    // polished edges
 uniform vec3 u_glint;  // highlights and the reflected studio light
 uniform vec3 u_tint;   // a breath of accent, glowing inside
 uniform vec3 u_bg;     // page colour, for aerial depth
 uniform vec3 u_light;
+uniform sampler2D u_shadowMap;
+uniform float u_texel;
+${HELIX_DEPTH_GLSL}
+
+/* 1.0 = fully lit, 0.0 = fully shadowed. 3x3 PCF so the edge is soft rather
+   than a stair-stepped outline of the shadow map's pixels. */
+float shadowAt(vec3 lightPos, float ndl) {
+  vec2 uv = lightPos.xy * 0.5 + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+  // Surfaces nearly edge-on to the light need a bigger bias or they shadow
+  // themselves in stripes (acne).
+  float bias = mix(0.014, 0.0025, clamp(ndl, 0.0, 1.0));
+  float lit = 0.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 o = vec2(float(x), float(y)) * u_texel;
+      float d = unpackDepth(texture2D(u_shadowMap, uv + o));
+      lit += step(lightPos.z - bias, d);
+    }
+  }
+  return lit / 9.0;
+}
+
 void main() {
   vec3 V = vec3(0.0, 0.0, 1.0);
   vec3 N = normalize(v_normal);
@@ -841,10 +1147,19 @@ void main() {
   N = mix(N, -N, inside);
   facing = abs(facing);
   float fresnel = pow(1.0 - facing, 2.0);
-  float diffuse = max(dot(N, u_light), 0.0);
+  float ndl = dot(N, u_light);
+  float diffuse = max(ndl, 0.0);
   float nh = max(dot(N, normalize(u_light + V)), 0.0);
   float spec = pow(nh, 90.0);
   float sheen = pow(nh, 10.0);
+
+  // Direct light only: ambient and the environment are not occluded, so the
+  // shadowed side stays glassy instead of going flat black.
+  float shade = shadowAt(v_light, ndl);
+  float lit = mix(0.3, 1.0, shade);
+  diffuse *= lit;
+  sheen *= lit;
+  spec *= shade;
 
   // Fake studio environment: the reflected ray's vertical direction picks
   // between a light "sky" and a dark "floor", plus one soft light strip. As the
@@ -869,43 +1184,98 @@ void main() {
 
   col += u_glint * (0.9 * spec + 0.07 * sheen);
   col *= mix(1.0, 0.62, inside);
+  // A little shade on the reflected light too. Direct light alone leaves the
+  // shadow visible but weak, because most of a glass surface's brightness here
+  // is environment rather than diffuse.
+  col *= mix(0.7, 1.0, shade);
   col = mix(u_bg, col, mix(0.5, 1.0, v_near));         // the far side recedes
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
 
+function compileHelixProgram(gl, vsSrc, fsSrc) {
+  const compile = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  return prog;
+}
+
+/* Both passes read the same interleaved buffer but use different slices of it.
+   Attribute enable state is global here (no VAOs in plain WebGL1), so every
+   slot is cleared before the ones this pass needs are switched on. */
+const HELIX_STRIDE = HELIX_VERTEX_FLOATS * 4;
+const HELIX_MAIN_LAYOUT = [
+  ["a_pos", 2, 0], ["a_depth", 1, 8], ["a_normal", 3, 12],
+  ["a_near", 1, 24], ["a_edge", 1, 28], ["a_light", 3, 32],
+];
+const HELIX_SHADOW_LAYOUT = [["a_light", 3, 32]];
+
+function useHelixProgram(gl, prog, layout) {
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, helix.buf);
+  for (let i = 0; i < 8; i++) gl.disableVertexAttribArray(i);
+  layout.forEach(([name, size, offset]) => {
+    const loc = gl.getAttribLocation(prog, name);
+    if (loc < 0) return;
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, HELIX_STRIDE, offset);
+  });
+}
+
 function initHelixGL() {
   const canvas = $("helix");
   try {
-    const gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias: true });
-    if (!gl) throw new Error("WebGL unavailable");
-    const compile = (type, src) => {
-      const sh = gl.createShader(type);
-      gl.shaderSource(sh, src);
-      gl.compileShader(sh);
-      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
-      return sh;
-    };
-    const prog = gl.createProgram();
-    gl.attachShader(prog, compile(gl.VERTEX_SHADER, HELIX_VS));
-    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, HELIX_FS));
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-    gl.useProgram(prog);
-
-    helix.buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, helix.buf);
-    const STRIDE = 7 * 4; // pos(2) + normal(3) + near(1) + edge(1), float32
-    [["a_pos", 2, 0], ["a_normal", 3, 8], ["a_near", 1, 20], ["a_edge", 1, 24]].forEach(([name, size, offset]) => {
-      const loc = gl.getAttribLocation(prog, name);
-      gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, STRIDE, offset);
+    const gl = canvas.getContext("webgl", {
+      alpha: true, premultipliedAlpha: true, antialias: true, depth: true,
     });
-    gl.disable(gl.DEPTH_TEST);              // opaque quads painted back to front instead
+    if (!gl) throw new Error("WebGL unavailable");
+
+    helix.main = compileHelixProgram(gl, HELIX_VS, HELIX_FS);
+    helix.shadow = compileHelixProgram(gl, HELIX_SHADOW_VS, HELIX_SHADOW_FS);
+    helix.buf = gl.createBuffer();
+
+    // Off-screen target for the light's-eye pass.
+    helix.shadowTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, helix.shadowTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HELIX_SHADOW_SIZE, HELIX_SHADOW_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    helix.shadowDepth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, helix.shadowDepth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, HELIX_SHADOW_SIZE, HELIX_SHADOW_SIZE);
+
+    helix.fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, helix.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, helix.shadowTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, helix.shadowDepth);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error("shadow framebuffer incomplete");
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    gl.enable(gl.DEPTH_TEST);   // opaque model: per-pixel occlusion, not per-quad sorting
+    gl.depthFunc(gl.LEQUAL);
     gl.disable(gl.BLEND);
 
     helix.u = {};
-    ["u_face", "u_rim", "u_glint", "u_tint", "u_bg", "u_light"].forEach((n) => { helix.u[n] = gl.getUniformLocation(prog, n); });
+    gl.useProgram(helix.main);
+    ["u_face", "u_rim", "u_glint", "u_tint", "u_bg", "u_light", "u_shadowMap", "u_texel"]
+      .forEach((n) => { helix.u[n] = gl.getUniformLocation(helix.main, n); });
     gl.uniform3fv(helix.u.u_light, HELIX_LIGHT);
+    gl.uniform1i(helix.u.u_shadowMap, 0);
+    gl.uniform1f(helix.u.u_texel, 1 / HELIX_SHADOW_SIZE);
+
     helix.gl = gl;
     return true;
   } catch (e) {
@@ -924,6 +1294,7 @@ function applyHelixColors() {
   const probe = document.createElement("span");
   probe.style.display = "none";
   document.body.appendChild(probe);
+  gl.useProgram(helix.main);
   const set = (uniform, token) => gl.uniform3fv(helix.u[uniform], readTokenRgb(probe, token).map((c) => c / 255));
   set("u_face", "--helix-face");
   set("u_rim", "--helix-rim");
@@ -943,7 +1314,9 @@ function sizeHelixCanvas() {
   gl.viewport(0, 0, canvas.width, canvas.height);
 }
 
-// One frame of geometry: ribbon quads + rung quads, sorted far to near.
+/* One frame of geometry. Each vertex carries its screen position, its world
+   position (the shadow pass needs it), the surface normal, depth cues and the
+   across-the-width coordinate the bevel reads. */
 function buildHelixQuads(w, h) {
   const narrow = w < 800;
   const S = Math.min(w, h * 1.35);
@@ -990,9 +1363,12 @@ function buildHelixQuads(w, h) {
       const across = v3.norm(v3.cross(f.radial, tangent));
       // Edge normals lean well outward across the width: a rounded, thick
       // ribbon, so its edges catch light even face-on.
+      const wl = v3.add(f.centre, v3.scale(across, W / 2));
+      const wr = v3.add(f.centre, v3.scale(across, -W / 2));
       const cur = {
-        l: project(v3.add(f.centre, v3.scale(across, W / 2)), f.base),
-        r: project(v3.add(f.centre, v3.scale(across, -W / 2)), f.base),
+        wl, wr,
+        l: project(wl, f.base),
+        r: project(wr, f.base),
         nl: v3.norm(v3.add(f.radial, v3.scale(across, 0.9))),
         nr: v3.norm(v3.add(f.radial, v3.scale(across, -0.9))),
         z: f.centre[2],
@@ -1003,8 +1379,8 @@ function buildHelixQuads(w, h) {
         quads.push({
           z: (prev.z + cur.z) / 2,
           v: [
-            [prev.l, prev.nl, near0, 1], [cur.l, cur.nl, near1, 1], [cur.r, cur.nr, near1, -1],
-            [prev.l, prev.nl, near0, 1], [cur.r, cur.nr, near1, -1], [prev.r, prev.nr, near0, -1],
+            [prev.l, prev.nl, near0, 1, prev.wl], [cur.l, cur.nl, near1, 1, cur.wl], [cur.r, cur.nr, near1, -1, cur.wr],
+            [prev.l, prev.nl, near0, 1, prev.wl], [cur.r, cur.nr, near1, -1, cur.wr], [prev.r, prev.nr, near0, -1, prev.wr],
           ],
         });
       }
@@ -1012,45 +1388,95 @@ function buildHelixQuads(w, h) {
     }
   });
 
-  // Base-pair rungs: glass rods through the axis at fixed heights. Each is split
-  // at the axis so its two halves sort independently against the ribbons.
-  const rodW = W * 0.075;
+  /* Base-pair rungs: solid prisms swept along the radial direction, spanning one
+     strand to the other straight through the axis. They stop a hair short of the
+     ribbon surface (RUNG_REACH) so the two do not fight for the same depth at the
+     joint — a fraction of a pixel, invisible, and the rung's own shadow on the
+     ribbon is what makes the junction read as attached. */
+  const RUNG_SIDES = 8;
+  const RUNG_REACH = 0.998;
+  const rodR = W * 0.042;
   for (let k = 0; k < HELIX_RUNGS; k++) {
     const u = (k + 0.5) / HELIX_RUNGS;
     const f = frameAt(u, 0);
-    const ends = [f.centre, v3.sub(v3.scale(f.base, 2), f.centre)]; // the two strands, through the axis
-    ends.forEach((end) => {
-      const p0 = project(end, f.base);
-      const p1 = project(f.base, f.base);
-      let sx = -(p1[1] - p0[1]);
-      let sy = p1[0] - p0[0];
-      const sl = Math.hypot(sx, sy) || 1;
-      sx /= sl;
-      sy /= sl;
-      const dir = v3.norm(v3.sub(f.base, end));
-      const n0 = v3.norm(v3.sub(toViewer, v3.scale(dir, v3.dot(toViewer, dir)))); // faces the viewer
-      const nL = v3.norm(v3.add(v3.scale(n0, 0.45), [sx, sy, 0]));
-      const nR = v3.norm(v3.add(v3.scale(n0, 0.45), [-sx, -sy, 0]));
-      const h0 = (rodW / 2) * p0[2];
-      const h1 = (rodW / 2) * p1[2];
-      const a = [p0[0] + sx * h0, p0[1] + sy * h0];
-      const b = [p0[0] - sx * h0, p0[1] - sy * h0];
-      const c = [p1[0] - sx * h1, p1[1] - sy * h1];
-      const d = [p1[0] + sx * h1, p1[1] + sy * h1];
-      const nearEnd = nearOf(end[2]);
-      const nearMid = nearOf(0);
+    const dir = f.radial;                                  // always perpendicular to the axis
+    const p1 = axis;                                       // one cross-section axis
+    const p2 = v3.norm(v3.cross(dir, p1));                 // the other
+    const endA = v3.add(f.base, v3.scale(dir, R * RUNG_REACH));
+    const endB = v3.sub(f.base, v3.scale(dir, R * RUNG_REACH));
+
+    const ring = (centreWorld) => {
+      const pts = [];
+      for (let s = 0; s < RUNG_SIDES; s++) {
+        const a = (s / RUNG_SIDES) * 2 * Math.PI;
+        const offset = v3.add(v3.scale(p1, Math.cos(a) * rodR), v3.scale(p2, Math.sin(a) * rodR));
+        const world = v3.add(centreWorld, offset);
+        pts.push({
+          world,
+          screen: project(world, f.base),
+          normal: v3.norm(offset),
+          near: nearOf(world[2]),
+          edge: Math.cos(a),                               // polished line along the rod's length
+        });
+      }
+      return pts;
+    };
+    const ra = ring(endA);
+    const rb = ring(endB);
+
+    for (let s = 0; s < RUNG_SIDES; s++) {
+      const s2 = (s + 1) % RUNG_SIDES;
+      const a = ra[s];
+      const b = ra[s2];
+      const c = rb[s2];
+      const d = rb[s];
       quads.push({
-        z: end[2] / 2,
+        z: (a.world[2] + c.world[2]) / 2,
         v: [
-          [a, nL, nearEnd, 1], [b, nR, nearEnd, -1], [c, nR, nearMid, -1],
-          [a, nL, nearEnd, 1], [c, nR, nearMid, -1], [d, nL, nearMid, 1],
+          [a.screen, a.normal, a.near, a.edge, a.world],
+          [b.screen, b.normal, b.near, b.edge, b.world],
+          [c.screen, c.normal, c.near, c.edge, c.world],
+          [a.screen, a.normal, a.near, a.edge, a.world],
+          [c.screen, c.normal, c.near, c.edge, c.world],
+          [d.screen, d.normal, d.near, d.edge, d.world],
         ],
       });
-    });
+    }
   }
 
-  quads.sort((q1, q2) => q1.z - q2.z); // back to front: nearer surfaces paint over farther ones
-  return quads;
+  quads.sort((q1, q2) => q1.z - q2.z); // back to front, so equal depths stay stable
+  return { quads, A, B, R, W };
+}
+
+/* Orthographic frame for the light's-eye pass: an axis along the light, plus the
+   model's extent in that frame so the shadow map covers it tightly. */
+function helixLightFrame(model) {
+  const f = v3.scale(HELIX_LIGHT, -1);                        // the direction light travels
+  const up = Math.abs(f[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
+  const right = v3.norm(v3.cross(up, f));
+  const upv = v3.cross(f, right);
+
+  const pad = model.R + model.W;
+  const xs = [Math.min(model.A[0], model.B[0]) - pad, Math.max(model.A[0], model.B[0]) + pad];
+  const ys = [Math.min(model.A[1], model.B[1]) - pad, Math.max(model.A[1], model.B[1]) + pad];
+  const zs = [-pad, pad];
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minD = Infinity, maxD = -Infinity;
+  for (const x of xs) for (const y of ys) for (const z of zs) {
+    const p = [x, y, z];
+    const px = v3.dot(p, right);
+    const py = v3.dot(p, upv);
+    const pd = v3.dot(p, f);
+    minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+    minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+    minD = Math.min(minD, pd); maxD = Math.max(maxD, pd);
+  }
+  return {
+    right, upv, f,
+    cx: (minX + maxX) / 2, hx: (maxX - minX) / 2 || 1,
+    cy: (minY + maxY) / 2, hy: (maxY - minY) / 2 || 1,
+    minD, spanD: (maxD - minD) || 1,
+  };
 }
 
 function renderHelix() {
@@ -1058,25 +1484,51 @@ function renderHelix() {
   if (!gl) return;
   const w = window.innerWidth;
   const h = window.innerHeight;
-  const quads = buildHelixQuads(w, h);
-  const data = new Float32Array(quads.length * 6 * 7);
+  const model = buildHelixQuads(w, h);
+  const quads = model.quads;
+  const lf = helixLightFrame(model);
+  const zHalf = model.R + model.W;   // the model's own depth range, for the depth buffer
+
+  const data = new Float32Array(quads.length * 6 * HELIX_VERTEX_FLOATS);
   let o = 0;
   for (const q of quads) {
-    for (const [p, n, near, edge] of q.v) {
+    for (const [p, n, near, edge, world] of q.v) {
       data[o++] = (p[0] / w) * 2 - 1;  // CSS px -> clip space
       data[o++] = 1 - (p[1] / h) * 2;
+      // Nearer means a larger world z, and in NDC nearer must be smaller.
+      data[o++] = Math.max(-1, Math.min(1, -world[2] / zHalf));
       data[o++] = n[0];
       data[o++] = n[1];                // page coords (y down), same frame as HELIX_LIGHT
       data[o++] = n[2];
       data[o++] = near;
       data[o++] = edge;
+      data[o++] = (v3.dot(world, lf.right) - lf.cx) / lf.hx;
+      data[o++] = (v3.dot(world, lf.upv) - lf.cy) / lf.hy;
+      data[o++] = (v3.dot(world, lf.f) - lf.minD) / lf.spanD;
     }
   }
-  gl.clearColor(0, 0, 0, 0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
+
   gl.bindBuffer(gl.ARRAY_BUFFER, helix.buf);
   gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
-  gl.drawArrays(gl.TRIANGLES, 0, quads.length * 6);
+  const count = quads.length * 6;
+
+  // Pass 1 — depth from the light's point of view.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, helix.fbo);
+  gl.viewport(0, 0, HELIX_SHADOW_SIZE, HELIX_SHADOW_SIZE);
+  gl.clearColor(1, 1, 1, 1);          // white = farthest, so empty space never shadows
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  useHelixProgram(gl, helix.shadow, HELIX_SHADOW_LAYOUT);
+  gl.drawArrays(gl.TRIANGLES, 0, count);
+
+  // Pass 2 — the visible model, reading that depth back as shadow.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, $("helix").width, $("helix").height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  useHelixProgram(gl, helix.main, HELIX_MAIN_LAYOUT);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, helix.shadowTex);
+  gl.drawArrays(gl.TRIANGLES, 0, count);
 }
 
 function helixTick(now) {
