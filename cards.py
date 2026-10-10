@@ -65,7 +65,7 @@ CARDS: list[dict] = [
         "title": "Pipeline & drugs in development",
         "subtitle": "Industry pipeline, clinicaltrials.gov, company disclosures",
         "claim_sections": [],
-        "raw_sources": ["clinicaltrials"],
+        "raw_sources": ["clinicaltrials", "opentargets", "regulatory"],
     },
     {
         "id": "patent_ip",

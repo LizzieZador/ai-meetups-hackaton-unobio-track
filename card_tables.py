@@ -40,6 +40,20 @@ def _cell(text, url: str | None = None):
     return {"text": text, "url": url} if url else text
 
 
+def _short(text: str, limit: int = 130) -> str:
+    """Trim to the point, never mid-word/mid-sentence — same safety-net
+    pattern as quick_summary.py's _short(), just a tighter default limit:
+    a table cell needs the fact, not the full sentence it came wrapped in."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(". ", 0, limit)
+    if cut != -1:
+        return text[: cut + 1]
+    cut = text.rfind(" ", 0, limit)
+    return (text[:cut] if cut != -1 else text[:limit]) + "…"
+
+
 # ---------------------------------------------------------------------------
 # Card 1 — Unmet need: bucket the card's OWN existing claims into 3 fixed
 # rows by keyword match. This never writes new text — it only re-sorts real,
@@ -206,23 +220,89 @@ def _split_category(claim_text: str) -> tuple[str, str]:
     return m.group(1).strip().title(), _CATEGORY_PREFIX.sub("", claim_text, count=1)
 
 
+# agents/scientific_agent.py already runs an 8-angle PubMed search (its own
+# `query_groups` dict) and tags every record it fetches with a "group" key
+# from that same taxonomy — genetics/tissue/perturbation/animal/pathway/
+# clinical/contradictory/translation. Rather than dump every claim + every
+# leftover raw record into one flat, unordered table (which read as a
+# meaningless pile of text), this groups everything — claims and raw
+# records alike — back into those same 8 real research angles, so the card
+# reads as a structured literature review, not a dump.
+_RESEARCH_ANGLES = [
+    ("genetics", "Human Genetics"),
+    ("tissue", "Tissue Expression"),
+    ("perturbation", "Genetic / Pharmacologic Perturbation"),
+    ("animal", "Animal Model"),
+    ("pathway", "Pathway Biology"),
+    ("clinical", "Clinical Evidence"),
+    ("contradictory", "Contradictory Evidence"),
+    ("translation", "Human Translation"),
+]
+_ANGLE_LABEL_BY_GROUP = dict(_RESEARCH_ANGLES)
+
+
+def _match_angle(category_text: str) -> str | None:
+    """Map a claim's free-text bracket category (the LLM's own wording,
+    e.g. "[human genetics]") onto one of the 8 canonical research angles
+    above, by keyword overlap rather than an exact string match."""
+    text = (category_text or "").lower()
+    for key, label in _RESEARCH_ANGLES:
+        if key in text:
+            return label
+    if "translat" in text or "pharmacokinetic" in text or "biomarker" in text:
+        return _ANGLE_LABEL_BY_GROUP["translation"]
+    if "resistan" in text or "adverse" in text or "fail" in text or "toxicit" in text:
+        return _ANGLE_LABEL_BY_GROUP["contradictory"]
+    return None
+
+
 def build_scientific_evidence_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
-    rows = []
+    rows_by_angle: dict[str, list[dict]] = {label: [] for _, label in _RESEARCH_ANGLES}
+    other_rows: list[dict] = []
+    cited_sources: set[str] = set()
+
     for c in claims_by_section.get("scientific_thesis", []):
-        category, finding = _split_category(c.claim)
+        category_text, finding = _split_category(c.claim)
+        angle = _match_angle(category_text)
         if c.type == "evidence":
             source_cell = _cell(c.source, c.url)
             date_cell = c.date_accessed or NA
+            if c.source:
+                cited_sources.add(c.source)
         else:
             source_cell = f"Inference (confidence: {c.confidence})" if c.confidence else "Inference"
             date_cell = NA
-        rows.append({"Category": category, "Finding": finding, "Source": source_cell, "Date": date_cell})
-    return {
-        "view": "table",
-        "columns": ["Category", "Finding", "Source", "Date"],
-        "rows": rows,
-        "show_claims_below": False,
-    }
+        row = {"Finding": _short(finding), "Source": source_cell, "Date": date_cell}
+        (rows_by_angle[angle] if angle else other_rows).append(row)
+
+    # The LLM only turns a handful of PubMed records into claims — the "N
+    # sources" footer counts every record this card actually fetched (via
+    # raw_sources: ["pubmed"] in cards.py), which is far more than that
+    # handful. Add the rest directly, under the same research angle they
+    # were originally fetched for — real snippet, real link, no LLM step.
+    for r in sources.get("pubmed", []):
+        if r.get("source") in cited_sources:
+            continue
+        angle = _ANGLE_LABEL_BY_GROUP.get(r.get("group"))
+        # raw_snippet is itself prefixed with the same "[group]" tag at fetch
+        # time (agents/scientific_agent.py) — redundant now that the row
+        # already sits under that angle's own section heading.
+        _, raw_finding = _split_category(r.get("raw_snippet") or "")
+        row = {
+            "Finding": _short(raw_finding or NA),
+            "Source": _cell(r.get("source"), r.get("url")),
+            "Date": r.get("pub_date") or r.get("date_accessed") or NA,
+        }
+        (rows_by_angle[angle] if angle else other_rows).append(row)
+
+    sections = [
+        {"kind": "table", "title": label, "columns": ["Finding", "Source", "Date"], "rows": rows_by_angle[label]}
+        for _, label in _RESEARCH_ANGLES
+    ]
+    if other_rows:
+        sections.append({"kind": "table", "title": "Other Findings", "columns": ["Finding", "Source", "Date"], "rows": other_rows})
+
+    return {"view": "composite", "sections": sections}
 
 
 # ---------------------------------------------------------------------------
@@ -322,22 +402,58 @@ def build_competitive_landscape_view(claims_by_section: dict, sources: dict, ana
 
 
 # ---------------------------------------------------------------------------
-# Card 6 — Pipeline & drugs in development: Drug / Sponsor. "Threat" (no
-# scoring source anywhere) and "Indication" (redundant — the whole report is
-# already scoped to one indication) were dropped per the team's decision.
+# Card 6 — Pipeline & drugs in development: two separate blocks, Drug then
+# Trial, rather than one merged "Drug / Trial" column — the drug list comes
+# from the same Open Targets analogs card 5 uses (real same-mechanism drug
+# names, not text parsed out of a trial title); the trial list is the raw
+# ClinicalTrials.gov registry entries. "Threat" (no scoring source anywhere)
+# and "Indication" (redundant — the whole report is already scoped to one
+# indication) stay dropped per the team's earlier decision.
 # ---------------------------------------------------------------------------
 def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
-    rows = []
-    for r in sources.get("clinicaltrials", []):
-        rows.append({
-            "Drug / Trial": _cell(r.get("briefTitle"), r.get("url")),
-            "Sponsor": r.get("leadSponsor") or NA,
+    # Status/Sponsor for a DRUG (not a trial) come from the same openFDA
+    # cross-reference card 5 uses for Lead Sponsor — openFDA has no generic
+    # "status" field, so Status is derived from whether it has a recorded
+    # approval at all, never invented.
+    reg_by_name = {
+        (r.get("drug_name") or "").strip().lower(): r
+        for r in sources.get("regulatory", [])
+        if r.get("drug_name")
+    }
+    drug_rows = []
+    for d in analogs:
+        name = d.get("name") or ""
+        reg = reg_by_name.get(name.strip().lower())
+        first_approval = reg.get("first_approval_date") if reg else None
+        if first_approval and len(first_approval) == 8:  # openFDA's raw YYYYMMDD
+            first_approval = f"{first_approval[:4]}-{first_approval[4:6]}-{first_approval[6:]}"
+        drug_rows.append({
+            "Drug": name or NA,
+            "Clinical Stage": d.get("stage") or NA,
+            "MoA": d.get("mechanism") or NA,
+            "Status": f"Approved ({first_approval})" if first_approval else NA,
+            "Sponsor": (reg.get("sponsor") if reg else None) or NA,
         })
+
+    trial_rows = [
+        {
+            "NCT ID": _cell(r.get("nctId") or NA, r.get("url")),
+            "Trial": r.get("briefTitle") or NA,
+            "Status": r.get("overallStatus") or NA,
+            "Sponsor": r.get("leadSponsor") or NA,
+        }
+        for r in sources.get("clinicaltrials", [])
+    ]
     return {
-        "view": "table",
-        "columns": ["Drug / Trial", "Sponsor"],
-        "rows": rows,
-        "show_claims_below": False,
+        "view": "composite",
+        "sections": [
+            {
+                "kind": "table", "title": "Drug",
+                "columns": ["Drug", "Clinical Stage", "MoA", "Status", "Sponsor"],
+                "rows": drug_rows,
+            },
+            {"kind": "table", "title": "Trial", "columns": ["NCT ID", "Trial", "Status", "Sponsor"], "rows": trial_rows},
+        ],
     }
 
 

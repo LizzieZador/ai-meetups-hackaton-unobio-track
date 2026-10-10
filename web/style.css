@@ -151,6 +151,14 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .chart-wrap { position:relative; height:280px; }
 .modal-box .chart-wrap { height:380px; }
 
+/* full data table shown below a graph in the expanded (modal) view only —
+   every underlying record, not just what the chart's top slices show */
+.graph-data-table-wrap { margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+.graph-data-table-wrap h4 { margin:0 0 10px; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+.graph-data-table-wrap .card-table td:first-child, .graph-data-table-wrap .card-table th:first-child { width:18px; padding-right:0; }
+.color-dot { display:inline-block; width:10px; height:10px; border-radius:50%; }
+.color-dot-muted { background:var(--line); }
+
 /* popup shown when a chart slice/bar is clicked — a small floating panel,
    never a new page, positioned below (or above) the chart so it never
    covers it, scrollable in place if its content runs long */

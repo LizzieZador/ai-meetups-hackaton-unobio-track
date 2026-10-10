@@ -169,6 +169,24 @@ function renderComposite(card) {
     .join("");
 }
 
+function renderGraphDataTable(card) {
+  if (!card.table_rows || !card.table_rows.length) return "";
+  const head = `<tr><th></th>${card.table_columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const body = card.table_rows
+    .map((row) => {
+      const swatch = row._color
+        ? `<span class="color-dot" style="background:${esc(row._color)}"></span>`
+        : `<span class="color-dot color-dot-muted" title="Not among the chart's top slices"></span>`;
+      const cells = card.table_columns.map((c) => `<td>${renderTableCell(row[c])}</td>`).join("");
+      return `<tr><td>${swatch}</td>${cells}</tr>`;
+    })
+    .join("");
+  return `<div class="graph-data-table-wrap">
+    <h4>All records (${card.table_rows.length}) — dot color matches the chart slice above</h4>
+    <table class="card-table"><thead>${head}</thead><tbody>${body}</tbody></table>
+  </div>`;
+}
+
 function renderTimeline(card) {
   if (!card.rows || !card.rows.length) {
     return `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
@@ -194,8 +212,10 @@ function renderCardBody(card, chartIdPrefix) {
   if (card.view === "table") {
     inner = renderTable(card) + (card.show_claims_below ? renderClaimsOnly(card) : "");
   } else if (card.view === "graph") {
+    const isModal = chartIdPrefix === "chart-modal";
     inner = card.chart
-      ? `<div class="chart-wrap"><canvas id="${chartIdPrefix}-${esc(card.id)}"></canvas></div>`
+      ? `<div class="chart-wrap"><canvas id="${chartIdPrefix}-${esc(card.id)}"></canvas></div>` +
+        (isModal ? renderGraphDataTable(card) : "")
       : `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
   } else if (card.view === "composite") {
     inner = renderComposite(card);
