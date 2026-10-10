@@ -4,12 +4,48 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Biotech Investment Committee</title>
+  <script>
+    // Set the theme before the first paint. Without this the page renders in the
+    // light palette first and app.js flips it a moment later, so a dark-mode
+    // visitor watched every colour animate from light to dark on each load.
+    // app.js's initTheme() still runs and owns the toggle; this only removes the flash.
+    (function () {
+      var theme = null;
+      try { theme = localStorage.getItem("unobio.theme"); } catch (e) {}
+      if (theme !== "light" && theme !== "dark") {
+        theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <button type="button" id="theme-toggle" class="theme-toggle" aria-pressed="false" title="Switch to dark theme" aria-label="Switch to dark theme">
+    <svg viewBox="0 0 40 40" width="26" height="26" aria-hidden="true">
+      <clipPath id="tt-clip"><circle cx="20" cy="20" r="19"/></clipPath>
+      <g clip-path="url(#tt-clip)">
+        <rect class="tt-sky" x="0" y="0" width="40" height="23"/>
+        <rect class="tt-sea" x="0" y="23" width="40" height="17"/>
+        <circle class="tt-star" cx="9" cy="8" r="1"/>
+        <circle class="tt-star" cx="16" cy="5" r=".8"/>
+        <circle class="tt-star" cx="29" cy="9" r=".9"/>
+        <circle class="tt-star" cx="33" cy="15" r=".7"/>
+        <g class="tt-sun">
+          <circle class="tt-sun-halo" cx="20" cy="18" r="10"/>
+          <circle class="tt-sun-core" cx="20" cy="18" r="6"/>
+        </g>
+        <g class="tt-moon">
+          <circle class="tt-moon-core" cx="20" cy="18" r="6.5"/>
+          <circle class="tt-moon-cut" cx="17" cy="15.5" r="5.5"/>
+        </g>
+      </g>
+    </svg>
+  </button>
   <div id="welcome" class="welcome">
+    <canvas id="helix" class="helix" aria-hidden="true"></canvas>
     <div class="welcome-inner">
-      <h1 class="welcome-title">Biotech Investment Committee</h1>
+      <h1 class="welcome-title">Biotech Investment Advice,<br>Powered By Data</h1>
       <p class="welcome-sub">Underwrite a drug, indication or mechanism across twelve intelligence cards.</p>
       <form id="welcome-form" class="welcome-form">
         <input id="welcome-query" type="text" autocomplete="off"

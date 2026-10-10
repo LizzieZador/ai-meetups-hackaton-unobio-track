@@ -109,7 +109,13 @@ def _clean_filer_name(name: str) -> str:
     return cleaned or "Unknown filer"
 
 
-_PIE_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"]
+# Series colours are NOT chosen here any more: they live as --series-1..6 in
+# style.css, with a separate validated row per theme, and the front-end paints
+# both the slices and the table swatches from those. This module only decides
+# WHICH slot each company gets (1-based, matching the CSS token names), so the
+# ring and its table rows always agree. SERIES_SLOTS is the slot count the CSS
+# defines — more companies than that would need new tokens, so the pie stops here.
+SERIES_SLOTS = 6
 
 
 def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
@@ -122,7 +128,7 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
         by_name.setdefault(_clean_filer_name(r.get("company")), []).append(r)
 
     counts = Counter({name: len(recs) for name, recs in by_name.items()})
-    top = counts.most_common(6)
+    top = counts.most_common(SERIES_SLOTS)
     total = sum(n for _, n in top) or 1
 
     # The percentage is baked into the legend label itself (not a tooltip
@@ -158,8 +164,9 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
             "labels": labels,
             "datasets": [{
                 "data": [n for _, n in top],
-                "backgroundColor": _PIE_PALETTE[: len(top)],
-                "borderColor": "#ffffff",
+                # Slice fill and the ring between slices are set by the
+                # front-end from the theme's tokens (a baked-in white border
+                # drew hard white rings on a dark card).
                 "borderWidth": 2,
                 "hoverOffset": 6,
             }],
@@ -183,11 +190,11 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
     }
 
     # Expanded (modal) view only: every single fetched record, not just the
-    # top 6 the pie slices show, each tagged with the same color as its pie
+    # top 6 the pie slices show, each tagged with the same series slot as its pie
     # slice (so a reader can connect a row back to the chart at a glance) —
-    # a company past the chart's top 6 gets no color, it simply isn't a
-    # slice. Grouped by company (same color together) then newest-first.
-    color_by_name = {name: _PIE_PALETTE[i % len(_PIE_PALETTE)] for i, (name, _) in enumerate(top)}
+    # a company past the chart's top slots gets no slot, it simply isn't a
+    # slice. Grouped by company (same colour together) then newest-first.
+    slot_by_name = {name: i + 1 for i, (name, _) in enumerate(top)}
     all_rows = []
     for name, _n in counts.most_common():  # every company, most filings first — matches the pie's own ranking
         for r in sorted(by_name[name], key=lambda r: r.get("file_date") or "", reverse=True):
@@ -197,7 +204,7 @@ def build_market_sentiment_view(claims_by_section: dict, sources: dict, analogs:
                 "Filed": r.get("file_date") or NA,
                 "Matched Term": r.get("matched_term") or NA,
                 "Source": _cell(r.get("source"), r.get("url")),
-                "_color": color_by_name.get(name),
+                "_slot": slot_by_name.get(name),
             })
 
     return {
