@@ -128,7 +128,9 @@ CRITICAL RULES:
 
 3. CONTRADICTIONS & RISK OVERRIDE:
    - Actively synthesize contradictions between analysts.
-   - If any key_risk has high probability and high impact (or if contradictory/toxic evidence is provided in context), the verdict CANNOT be "Invest". It must be "Conditional" or "Do Not Invest".
+   - A single moderate-to-high risk does NOT automatically rule out "Invest" — almost every real biotech program carries at least one meaningful risk (competition, trial execution, pricing); that alone is not disqualifying. Weigh it against the full picture: target validation, clinical/competitive precedent, and the deterministic rNPV.
+   - The verdict CANNOT be "Invest" only when a risk is genuinely catastrophic (probability >= 70% AND impact >= 75% of rNPV) or when contradictory/toxic evidence directly undermines the mechanism's viability — in those specific cases it must be "Conditional" or "Do Not Invest".
+   - If you choose "Invest" despite a notable (but non-catastrophic) risk, your reasoning MUST name that risk explicitly and explain why it's manageable or already priced into the valuation — never choose "Invest" while silently ignoring a risk you yourself flagged.
 4. Never produce type "evidence" claims. Return ONLY the JSON array, nothing else.
 """
 
@@ -377,6 +379,34 @@ def _enforce_deterministic_financials(
         synthesis_claims.extend(det_claims[1:])
 
 
+_RISK_WORD_STOPWORDS = ("phase", "trial", "study", "cause", "causing", "causes", "clinical")
+
+
+def _risk_addressed_in_reasoning(risk_text: str, reasoning_text: str, threshold: float = 0.25) -> bool:
+    """Soft semantic-overlap check (same word-overlap-ratio idea as
+    _is_duplicate_question below), with a crude 6-character-prefix "stem" in
+    place of the exact word — a verdict's reasoning engaging with a risk
+    almost always uses a different inflection of the same word ("competitive"
+    risk addressed via "commercial competition" — zero exact-word overlap,
+    but "compet" vs "compet" matches). Compared against the risk's own short
+    title (r.claim), not its longer reasoning text: that title is where the
+    distinctive words actually are — folding in the verbose reasoning just
+    dilutes the denominator and makes the threshold harder to clear for no
+    benefit."""
+    def stems(text: str, min_len: int) -> set[str]:
+        return {
+            w[:6] for w in re.findall(rf"\b[a-zA-Z]{{{min_len},}}\b", text.lower())
+            if w not in _RISK_WORD_STOPWORDS
+        }
+
+    risk_stems = stems(risk_text, 5)
+    if not risk_stems:
+        return False
+    reasoning_stems = stems(reasoning_text, 4)
+    overlap = len(risk_stems & reasoning_stems)
+    return (overlap / len(risk_stems)) >= threshold
+
+
 def _enforce_risk_override_guardrail(
     upstream_claims: list[Claim],
     synthesis_claims: list[Claim],
@@ -424,12 +454,7 @@ def _enforce_risk_override_guardrail(
         # Catastrophic unmitigated fatal risk (direct deal-killer)
         is_fatal = prob >= 0.70 and imp_pct >= 0.75
         if is_fatal:
-            reasoning_lower = (verdict_claim.reasoning or "").lower()
-            risk_words = [
-                w for w in re.findall(r"\b[a-zA-Z]{5,}\b", r.claim.lower())
-                if w not in ("phase", "trial", "study", "cause", "causing", "causes", "clinical")
-            ]
-            is_explicitly_addressed = any(re.search(rf"\b{re.escape(w)}\b", reasoning_lower) for w in risk_words)
+            is_explicitly_addressed = _risk_addressed_in_reasoning(r.claim, verdict_claim.reasoning or "")
 
             if not is_explicitly_addressed:
                 verdict_claim.claim = "Do Not Invest"
@@ -451,12 +476,7 @@ def _enforce_risk_override_guardrail(
             )
 
             if is_high_prob and is_high_impact:
-                reasoning_lower = (verdict_claim.reasoning or "").lower()
-                risk_words = [
-                    w for w in re.findall(r"\b[a-zA-Z]{5,}\b", r.claim.lower())
-                    if w not in ("phase", "trial", "study", "cause", "causing", "causes", "clinical")
-                ]
-                is_explicitly_addressed = any(re.search(rf"\b{re.escape(w)}\b", reasoning_lower) for w in risk_words)
+                is_explicitly_addressed = _risk_addressed_in_reasoning(r.claim, verdict_claim.reasoning or "")
 
                 if not is_explicitly_addressed:
                     verdict_claim.claim = "Conditional"

@@ -174,13 +174,28 @@ entirely when you have nothing concrete to propose.
 Keep replies short (2-5 sentences) and plain. Never fabricate citations, trial IDs, or numbers."""
 
 
+_MAX_REPORT_CONTEXT_CHARS = 400_000  # a real 12-card report runs ~150-250KB; this leaves real headroom
+
+
 def _format_report_context(report: dict | None) -> str:
     if not report:
         return "null (no report is currently loaded in the browser)"
     # The full report is exactly what the cards already render — passed through
     # as-is rather than re-summarized, so nothing the UI shows is invisible to
     # the assistant and nothing it says can be more detailed than what's on screen.
-    return json.dumps(report, ensure_ascii=False)[:40000]  # hard cap: a pathological report never blows the prompt
+    #
+    # BUG FIX: this used to hard-cap at 40,000 chars — far smaller than a real
+    # report (confirmed ~207KB for a typical 10-card run), which silently cut
+    # off whichever cards happen to serialize later (risk_diligence,
+    # regulatory_timeline) and made the assistant wrongly claim their data
+    # "isn't loaded" even though it was fetched and shown on screen. The new
+    # cap is sized to comfortably hold a real report; if a pathological one
+    # still exceeds it, the cut is flagged explicitly rather than silently
+    # truncating valid JSON into broken JSON the model has to guess at.
+    text = json.dumps(report, ensure_ascii=False)
+    if len(text) <= _MAX_REPORT_CONTEXT_CHARS:
+        return text
+    return text[:_MAX_REPORT_CONTEXT_CHARS] + '... [TRUNCATED — report exceeded the context size limit; some cards after this point are missing]"}'
 
 
 def _format_history(history: list[dict]) -> str:

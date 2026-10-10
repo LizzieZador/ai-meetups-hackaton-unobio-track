@@ -40,6 +40,13 @@ def _cell(text, url: str | None = None):
     return {"text": text, "url": url} if url else text
 
 
+def _format_fda_date(raw: str | None) -> str | None:
+    """openFDA dates come back as raw YYYYMMDD — "2021-05-28" reads better."""
+    if raw and len(raw) == 8 and raw.isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    return raw
+
+
 def _short(text: str, limit: int = 130) -> str:
     """Trim to the point, never mid-word/mid-sentence — same safety-net
     pattern as quick_summary.py's _short(), just a tighter default limit:
@@ -424,9 +431,7 @@ def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[di
     for d in analogs:
         name = d.get("name") or ""
         reg = reg_by_name.get(name.strip().lower())
-        first_approval = reg.get("first_approval_date") if reg else None
-        if first_approval and len(first_approval) == 8:  # openFDA's raw YYYYMMDD
-            first_approval = f"{first_approval[:4]}-{first_approval[4:6]}-{first_approval[6:]}"
+        first_approval = _format_fda_date(reg.get("first_approval_date") if reg else None)
         drug_rows.append({
             "Drug": name or NA,
             "Clinical Stage": d.get("stage") or NA,
@@ -548,21 +553,68 @@ def build_trial_design_view(claims_by_section: dict, sources: dict, analogs: lis
 #   4. Diligence questions — the diligence_questions claims the chair agent
 #      already produces every run.
 # ---------------------------------------------------------------------------
-def _risk_recommendation_text(key_risks: list[Claim], green_rows: list[dict]) -> str:
+def _top_risk_claim(key_risks: list[Claim]) -> Claim | None:
+    """The single most severe flagged risk, by whatever structured risk
+    metric is present (risk_score first, else probability+impact) — picking
+    *a* claim to headline, never writing a new one."""
+    scored = [c for c in key_risks if c.claim]
+    if not scored:
+        return None
+    return max(scored, key=lambda c: (c.risk_score or 0) + (c.probability or 0) + (c.impact_pct or 0))
+
+
+# What each FDA designation code actually means and why it matters to an
+# investment decision — plain, factual, and generic (true of the designation
+# itself, not a per-drug claim), so this is static reference text, never a
+# fabricated fact about any specific drug. Confirmed live against openFDA
+# that "Orphan" and "Priority Review" are what our own data actually
+# produces today; Fast Track/Breakthrough/Accelerated Approval are kept as a
+# defensive fallback in case openFDA's data later surfaces them — an
+# unrecognized code still shows plainly rather than a made-up explanation.
+_DESIGNATION_EXPLANATIONS = {
+    "Orphan": "Orphan Drug Designation: granted for rare-disease therapies; gives the sponsor 7 years of US market exclusivity plus tax credits and fee waivers.",
+    "Priority Review": "FDA committed to a 6-month review instead of the standard 10 — granted when the agency sees a meaningful improvement over existing treatment.",
+    "Fast Track": "Fast Track Designation: more frequent FDA interaction and rolling review, meant to speed development for a serious unmet medical need.",
+    "Breakthrough Therapy": "Breakthrough Therapy Designation: intensive FDA guidance plus rolling review, granted when early evidence shows substantial improvement over available therapy.",
+    "Accelerated Approval": "Accelerated Approval: approved on a surrogate endpoint reasonably likely to predict clinical benefit, pending a confirmatory trial.",
+}
+
+
+def _top_green_row(green_rows: list[dict]) -> dict | None:
+    with_designation = [r for r in green_rows if r.get("Designation") != NA]
+    return with_designation[0] if with_designation else None
+
+
+def _risk_summary_text(key_risks: list[Claim], green_rows: list[dict]) -> str:
+    """The card's headline — counts of both flag types plus, when present,
+    which specific risk and which specific drug/designation are the most
+    important ones, so the client sees the two things that matter most
+    before scrolling into the full Red Flags / Green Flags groups below."""
     high_risk = sum(
         1 for c in key_risks
         if (c.risk_score or 0) >= 0.3 or (c.probability or 0) >= 0.5
     )
-    designation_count = sum(len(r.get("designations") or []) for r in green_rows)
+    drugs_with_designation = {r["Drug"] for r in green_rows if r.get("Designation") != NA}
+
     risk_part = (
         f"{high_risk} high-severity risk(s) flagged" if high_risk
         else (f"{len(key_risks)} risk(s) flagged, none high-severity" if key_risks else "no risks flagged")
     )
     green_part = (
-        f"{designation_count} regulatory designation(s) found on same-mechanism drugs" if designation_count
+        f"{len(drugs_with_designation)} drug(s) with a regulatory designation" if drugs_with_designation
         else "no regulatory designations found on same-mechanism drugs"
     )
-    return f"{risk_part.capitalize()}; {green_part}."
+    lines = [f"{risk_part.capitalize()}; {green_part}."]
+
+    top_risk = _top_risk_claim(key_risks)
+    if top_risk:
+        lines.append(f"Top red flag: {_short(top_risk.claim)}")
+
+    top_green = _top_green_row(green_rows)
+    if top_green:
+        lines.append(f"Top green flag: {top_green['Drug']} — {top_green['Designation']}.")
+
+    return " ".join(lines)
 
 
 def build_risk_diligence_view(claims_by_section: dict, sources: dict, analogs: list[dict], mechanism: str = "") -> dict:
@@ -570,29 +622,47 @@ def build_risk_diligence_view(claims_by_section: dict, sources: dict, analogs: l
     critical_unknowns = claims_by_section.get("critical_unknowns", [])
     diligence = claims_by_section.get("diligence_questions", [])
 
+    # One row per designation, not per drug — cramming "Orphan, Priority
+    # Review" into one cell left no room to say what either one actually
+    # means. A drug with no designation at all still gets one row (so it
+    # isn't silently missing), with Designation/What It Means as "Not
+    # available" rather than skipped.
     green_rows = []
     for r in sources.get("regulatory", []):
-        brands = r.get("brand_names") or []
+        drug = r.get("drug_name") or NA
+        sponsor = r.get("sponsor") or NA
+        first_approval = _cell(_format_fda_date(r.get("first_approval_date")) or NA, r.get("url"))
         designations = r.get("designations") or []
-        green_rows.append({
-            "Drug": r.get("drug_name") or NA,
-            "Sponsor": r.get("sponsor") or NA,
-            "Brand": ", ".join(brands) or NA,
-            "Designations": ", ".join(designations) or NA,
-            "First Approval": _cell(r.get("first_approval_date") or NA, r.get("url")),
-        })
+        if not designations:
+            green_rows.append({
+                "Drug": drug, "Designation": NA, "What It Means": NA,
+                "Sponsor": sponsor, "First Approval": first_approval,
+            })
+            continue
+        for code in designations:
+            green_rows.append({
+                "Drug": drug,
+                "Designation": code,
+                "What It Means": _DESIGNATION_EXPLANATIONS.get(code, NA),
+                "Sponsor": sponsor,
+                "First Approval": first_approval,
+            })
 
-    precaution_items = [{"kind": "claim", **c.to_dict()} for c in key_risks + critical_unknowns]
+    red_flag_items = [{"kind": "claim", **c.to_dict()} for c in key_risks + critical_unknowns]
     diligence_items = [{"kind": "claim", **c.to_dict()} for c in diligence]
 
+    # Order matters here: the headline summary (naming the top red flag and
+    # top green flag) comes first, then the full groups — Red Flags / Green
+    # Flags / Diligence Questions — in order of how decision-relevant they
+    # are to a client scanning the card, general detail last.
     return {
         "view": "composite",
         "sections": [
-            {"kind": "text", "title": "Recommendation", "text": _risk_recommendation_text(key_risks, green_rows)},
-            {"kind": "list", "title": "Precaution", "items": precaution_items},
+            {"kind": "text", "title": "Summary", "text": _risk_summary_text(key_risks, green_rows)},
+            {"kind": "list", "title": "Red Flags", "items": red_flag_items},
             {
                 "kind": "table", "title": "Green Flags",
-                "columns": ["Drug", "Sponsor", "Brand", "Designations", "First Approval"],
+                "columns": ["Drug", "Designation", "What It Means", "Sponsor", "First Approval"],
                 "rows": green_rows,
             },
             {"kind": "list", "title": "Diligence Questions", "items": diligence_items},
