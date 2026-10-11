@@ -16,10 +16,13 @@ testing or a demo must not burn more of that budget.
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
 import requests
+
+from sources.cache import atomic_write
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -38,15 +41,32 @@ PRICE_ANTHROPIC_IN = 2.00
 PRICE_ANTHROPIC_OUT = 10.00
 PRICE_GEMINI_IN = 0.075
 PRICE_GEMINI_OUT = 0.30
-# The team gateway's real per-token price isn't published anywhere we can
-# confirm — 0.0 is a known placeholder, not a verified free tier. Update these
-# the moment the team gateway's actual pricing is known.
-PRICE_OPENAI_IN = 0.0
-PRICE_OPENAI_OUT = 0.0
+
+
+def _env_price(name: str) -> float | None:
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return None
+
+
+# The team gateway publishes no per-token price, so it is read from .env
+# (PRICE_OPENAI_IN / PRICE_OPENAI_OUT, USD per 1M tokens) at summary time —
+# this module can be imported before .env is loaded. Unset -> the cost is
+# reported as unknown (None), never as a made-up $0.
 
 _anthropic_client = None
 _openai_client = None
-_usage_log: list[dict] = []
+# Per request thread: Flask serves each request on its own thread, so two
+# evaluations (or the assistant during an evaluation) no longer mix their
+# token counts. Agent LLM calls always run on the request's thread.
+_local = threading.local()
+
+
+def _usage_log() -> list[dict]:
+    if not hasattr(_local, "usage"):
+        _local.usage, _local.cached = [], 0
+    return _local.usage
 
 
 def _get_anthropic_client():
@@ -67,33 +87,38 @@ def _get_openai_client(api_key: str):
 
 def reset_usage_log() -> None:
     """Call at the start of a pipeline run so cost is scoped to that one run."""
-    _usage_log.clear()
+    _local.usage, _local.cached = [], 0
 
 
 def get_usage_summary() -> dict:
     """Aggregate token usage and price each provider's calls at its own rate."""
-    input_tokens = sum(u.get("input_tokens", 0) for u in _usage_log)
-    output_tokens = sum(u.get("output_tokens", 0) for u in _usage_log)
-    models = list(dict.fromkeys(u["model"] for u in _usage_log))
+    log = _usage_log()
+    input_tokens = sum(u.get("input_tokens", 0) for u in log)
+    output_tokens = sum(u.get("output_tokens", 0) for u in log)
+    models = list(dict.fromkeys(u["model"] for u in log))
     model = models[0] if len(models) == 1 else ("mixed: " + ", ".join(models) if models else "unknown")
-    cost = 0.0
-    for usage in _usage_log:
+    cost: float | None = 0.0
+    for usage in log:
         used_model = usage["model"]
         if "gemini" in used_model.lower():
             price_in, price_out = PRICE_GEMINI_IN, PRICE_GEMINI_OUT
         elif used_model == MODEL_OPENAI:
-            price_in, price_out = PRICE_OPENAI_IN, PRICE_OPENAI_OUT
+            price_in, price_out = _env_price("PRICE_OPENAI_IN"), _env_price("PRICE_OPENAI_OUT")
         else:
             price_in, price_out = PRICE_ANTHROPIC_IN, PRICE_ANTHROPIC_OUT
+        if price_in is None or price_out is None or cost is None:
+            cost = None  # a model with no known price makes the total unknown
+            continue
         cost += (usage.get("input_tokens", 0) / 1_000_000) * price_in
         cost += (usage.get("output_tokens", 0) / 1_000_000) * price_out
 
     return {
         "model": model,
-        "calls": len(_usage_log),
+        "calls": len(log),
+        "cached_calls": getattr(_local, "cached", 0),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "approx_cost_usd": round(cost, 4),
+        "approx_cost_usd": round(cost, 4) if cost is not None else None,
     }
 
 
@@ -166,7 +191,7 @@ def _ask_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
             if resp.status_code == 200:
                 data = resp.json()
                 usage = data.get("usageMetadata", {})
-                _usage_log.append({
+                _usage_log().append({
                     "model": model,
                     "input_tokens": usage.get("promptTokenCount", 0),
                     # thoughts are billed as output tokens but counted separately
@@ -244,7 +269,7 @@ def _ask_openai(api_key: str, system_prompt: str, user_prompt: str, max_tokens: 
             model=MODEL_OPENAI, messages=messages, max_completion_tokens=max_tokens
         )
     usage = response.usage
-    _usage_log.append({
+    _usage_log().append({
         "model": MODEL_OPENAI,
         "input_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
         "output_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
@@ -261,7 +286,7 @@ def _ask_claude(system_prompt: str, user_prompt: str, max_tokens: int = 3000) ->
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    _usage_log.append({
+    _usage_log().append({
         "model": MODEL_ANTHROPIC,
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
@@ -286,7 +311,7 @@ def _ask_openai_text(api_key: str, system_prompt: str, user_prompt: str, max_tok
         max_completion_tokens=max_tokens,
     )
     usage = response.usage
-    _usage_log.append({
+    _usage_log().append({
         "model": MODEL_OPENAI,
         "input_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
         "output_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
@@ -317,7 +342,7 @@ def _ask_gemini_text(api_key: str, system_prompt: str, user_prompt: str, max_tok
             if resp.status_code == 200:
                 data = resp.json()
                 usage = data.get("usageMetadata", {})
-                _usage_log.append({
+                _usage_log().append({
                     "model": model,
                     "input_tokens": usage.get("promptTokenCount", 0),
                     "output_tokens": usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0),
@@ -350,7 +375,7 @@ def _ask_claude_text(system_prompt: str, user_prompt: str, max_tokens: int) -> s
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    _usage_log.append({
+    _usage_log().append({
         "model": MODEL_ANTHROPIC,
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
@@ -405,19 +430,26 @@ def _cache_path(system_prompt: str, user_prompt: str) -> Path:
 
 
 def ask_claude_json(system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> list[dict]:
-    """Unified entrypoint: Gemini if GEMINI_API_KEY (or GOOGLE_API_KEY) is set, otherwise Claude.
+    """Unified entrypoint for the agents: ChatGPT -> Gemini -> Claude (see _ask).
 
     Cached by a hash of the exact prompt pair — an identical call (same agent,
-    same indication/mechanism/sources) never spends quota or money twice.
+    same indication/mechanism/sources) never spends quota or money twice; such
+    hits are counted separately as cached_calls in the usage summary.
     """
     cache_path = _cache_path(system_prompt, user_prompt)
     if cache_path.exists():
-        return json.loads(cache_path.read_text(encoding="utf-8"))
+        try:
+            result = json.loads(cache_path.read_text(encoding="utf-8"))
+            _usage_log()
+            _local.cached += 1
+            return result
+        except (OSError, ValueError):
+            pass  # corrupt entry — ask again and overwrite it
 
     result = _ask(system_prompt, user_prompt, max_tokens)
 
     if result:  # don't cache [] / failures — let the next call retry for real
-        cache_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write(cache_path, json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
 

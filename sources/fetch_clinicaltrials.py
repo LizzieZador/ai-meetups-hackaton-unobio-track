@@ -24,15 +24,20 @@ def fetch_clinicaltrials(
     intervention: str,
     max_results: int = 10,
     status_filter: Optional[Union[str, list[str]]] = None,
+    term: str = "",
 ) -> Optional[list[dict]]:
     """Search trials for a condition + intervention pair, with optional status filter.
 
+    `term` is a free-text filter over the whole record (e.g. a biomarker such
+    as "KRAS G12C" in eligibility criteria or arm titles).
     Caches results in cache/ using a SHA-256 hash of the query parameters.
     Returns None on failure — caller must not crash the pipeline.
     """
     params = {"query.cond": condition, "pageSize": max_results}
     if intervention:  # condition-only searches (e.g. "what is in trials for X?") omit it
         params["query.intr"] = intervention
+    if term:
+        params["query.term"] = term
     if status_filter:
         if isinstance(status_filter, (list, tuple, set)):
             status_val = ",".join(s.strip() for s in status_filter if s.strip())

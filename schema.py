@@ -8,6 +8,7 @@ task brief ("Moving Beyond the Molecule") — the report is assembled by groupin
 claims under these exact headings, not by an LLM freely writing a report.
 """
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
@@ -150,7 +151,13 @@ SECTION_ALIASES: dict[str, str] = {
     "due_diligence_questions": "diligence_questions",
 }
 
-_dropped_claims_log: list[dict] = []
+_local = threading.local()  # per request thread, like llm.py's usage log
+
+
+def _dropped_claims_log() -> list[dict]:
+    if not hasattr(_local, "dropped"):
+        _local.dropped = []
+    return _local.dropped
 
 
 def log_dropped_claim(stage: str, claim_data: object, reason: str) -> None:
@@ -164,7 +171,7 @@ def log_dropped_claim(stage: str, claim_data: object, reason: str) -> None:
     else:
         claim_repr = str(claim_data)
 
-    _dropped_claims_log.append({
+    _dropped_claims_log().append({
         "stage": stage,
         "claim": claim_repr,
         "reason": reason,
@@ -173,12 +180,12 @@ def log_dropped_claim(stage: str, claim_data: object, reason: str) -> None:
 
 def reset_dropped_claims_log() -> None:
     """Reset the dropped claims log at the start of a pipeline run."""
-    _dropped_claims_log.clear()
+    _local.dropped = []
 
 
 def get_dropped_claims_log() -> list[dict]:
     """Retrieve all dropped claims recorded during the current run."""
-    return list(_dropped_claims_log)
+    return list(_dropped_claims_log())
 
 
 def _normalize_fraction(val: Any) -> Optional[float]:

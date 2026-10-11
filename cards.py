@@ -18,6 +18,7 @@ claims land in the "risk_diligence" card below, alongside key_risks/
 critical_unknowns and the green-flag regulatory table.
 """
 from card_tables import VIEW_BUILDERS
+from program_views import attach_program_sections
 from schema import Claim
 
 CARDS: list[dict] = [
@@ -40,7 +41,7 @@ CARDS: list[dict] = [
         "title": "Scientific evidence: efficacy, safety & differentiation",
         "subtitle": "Data room, published studies, FDA and EMA resources",
         "claim_sections": ["scientific_thesis"],
-        "raw_sources": ["pubmed"],
+        "raw_sources": ["pubmed", "biomarker_literature"],
     },
     {
         "id": "patient_population",
@@ -77,7 +78,7 @@ CARDS: list[dict] = [
         "title": "Clinical trial design intelligence",
         "subtitle": "Protocols, clinicaltrials.gov, publications",
         "claim_sections": ["clinical_development_plan"],
-        "raw_sources": ["clinicaltrials"],
+        "raw_sources": ["clinicaltrials", "biomarker_trials"],
     },
     {
         "id": "risk_diligence",
@@ -97,8 +98,11 @@ CARDS: list[dict] = [
 ]
 
 
-def build_cards(claims: list[Claim], sources: dict, analogs: list[dict], mechanism: str = "") -> list[dict]:
-    """Group claims + fetched records into the 12 cards the front-end renders."""
+def build_cards(
+    claims: list[Claim], sources: dict, analogs: list[dict], mechanism: str = "", details: dict | None = None
+) -> list[dict]:
+    """Group claims + fetched records into the 10 cards the front-end renders.
+    details (the optional program inputs) add the program's own sections — see program_views.py."""
     by_section: dict[str, list[Claim]] = {}
     for c in claims:
         by_section.setdefault(c.section, []).append(c)
@@ -136,6 +140,7 @@ def build_cards(claims: list[Claim], sources: dict, analogs: list[dict], mechani
 
         view_builder = VIEW_BUILDERS.get(spec["id"])
         view = view_builder(by_section, sources, analogs, mechanism) if view_builder else {"view": "list"}
+        view = attach_program_sections(spec["id"], view, details or {}, sources, analogs, mechanism)
 
         cards.append({
             "id": spec["id"],

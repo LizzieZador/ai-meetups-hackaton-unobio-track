@@ -67,6 +67,7 @@ def fetch_drug_labels(drug_names: list[str]) -> list[dict]:
         indication = _clean((label.get("indications_and_usage") or [""])[0], 400)
         boxed = _clean((label.get("boxed_warning") or [""])[0], 300) or None
         set_id = label.get("set_id")
+        route = ", ".join(r.title() for r in (label.get("openfda") or {}).get("route") or []) or None
         brand = ", ".join(((label.get("openfda") or {}).get("brand_name") or [])[:2])
         if not brand:  # no openfda block: the product text starts with the brand
             first = ((label.get("spl_product_data_elements") or [""])[0].split() or [""])[0]
@@ -76,6 +77,7 @@ def fetch_drug_labels(drug_names: list[str]) -> list[dict]:
             "brand": brand or None,
             "indication": indication or None,
             "boxed_warning": boxed,
+            "route": route,
             "label_date": label.get("effective_time"),
             "source": f"FDA label (DailyMed) {brand or name.title()}",
             "url": f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={set_id}" if set_id else API_URL,

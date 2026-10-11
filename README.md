@@ -15,9 +15,18 @@ python server.py        # http://127.0.0.1:5000
 
 Запит вводиться одним рядком: `KRAS G12C | Non-Small Cell Lung Cancer`
 (роздільники: `|`, `×`, `/`, `for`, `in`) або двома полями в Detailed search.
-Кнопка **+ Details** додає необов'язкові параметри програми: modality,
-development stage, route of administration, biomarkers, preclinical results —
-вони передаються всім агентам як контекст і показуються у звіті.
+Кнопка **+ Details** додає необов'язкові параметри програми, і вони реально
+змінюють пошук і результат (`program_views.py`), а не лише промпт:
+
+| Поле | Що змінює |
+|---|---|
+| Development stage | фінмодель рахує лише етапи, що попереду: капітал, терміни, PTRS, rNPV (картка 4); без стадії — Phase 1 з позначкою «assumed» |
+| Biomarkers | додатковий пошук: дослідження ClinicalTrials.gov з відбором за маркером (картка 8) і статті PubMed (картка 3, а також evidence для scientific agent) |
+| Modality | конкуренти з тією ж модальністю позначені й підняті нагору (картка 5); частка в профілі продукту (картка 1) |
+| Route | шлях введення конкурентів з етикеток FDA, збіги з вашим (картки 1, 5) |
+| Preclinical results | профіль продукту (картка 1, позначено як неперевірене) і контекст для агентів |
+
+Усі поля також передаються агентам як контекст і показуються у звіті.
 
 ## Як це працює
 
@@ -54,7 +63,7 @@ collect_sources() -> scientific_agent -> clinical_agent -> commercial_agent
 |---|---|
 | PubMed | наукові публікації за 8 дослідницькими напрямами |
 | Open Targets | асоціація мішень–хвороба, відомі препарати, профілі (мішені, модальність, стадія) |
-| ClinicalTrials.gov | дослідження, фази, статуси, препарати-інтервенції |
+| ClinicalTrials.gov | дослідження, фази, статуси, препарати-інтервенції; пошук за біомаркерами |
 | AACT | агрегована база ClinicalTrials.gov (Postgres або flat-файли в `data/aact/`) |
 | openFDA Drugs@FDA | схвалення, спонсори, designations (Orphan, Priority Review) |
 | openFDA Drug Labels | офіційні показання з етикетки США та boxed warnings |
@@ -81,6 +90,7 @@ collect_sources() -> scientific_agent -> clinical_agent -> commercial_agent
 ├── assistant.py           # чат-асистент, заземлений на дані
 ├── cards.py               # 10 карток: які секції/джерела куди
 ├── card_tables.py         # таблиці/графіки карток (без LLM)
+├── program_views.py       # секції «ваша програма» з + Details
 ├── raw_data.py            # список конкурентів, валідні джерела
 ├── schema.py              # Claim: evidence/inference + секції
 ├── financials.py          # детермінований rNPV і капітал

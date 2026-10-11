@@ -34,6 +34,7 @@ from financials import FinancialResult, run_deterministic_financials
 from llm import get_usage_summary, reset_usage_log
 from raw_data import collect_valid_sources, extract_analogs
 from schema import Claim, get_dropped_claims_log, reset_dropped_claims_log, log_dropped_claim
+from sources.fetch_biomarker_evidence import fetch_biomarker_evidence
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
 from sources.fetch_cms_spending import fetch_medicare_spending
@@ -57,8 +58,12 @@ def collect_sources(
     indication: str,
     mechanism: str,
     cutoff_date: Optional[str] = None,
+    details: Optional[dict] = None,
 ) -> dict:
     """Fetch raw snippets from every connected source.
+
+    details are the optional program inputs; the Biomarkers field adds
+    biomarker-matched trials and literature (sources/fetch_biomarker_evidence.py).
 
     Uses the richer collectors (8-angle PubMed search + target context for
     scientific/translation evidence; AACT direct-competitor analysis +
@@ -77,10 +82,12 @@ def collect_sources(
     Book, which needs the openFDA application numbers from wave 2.
     """
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        return _collect_sources(pool, indication, mechanism, cutoff_date)
+        return _collect_sources(pool, indication, mechanism, cutoff_date, details or {})
 
 
-def _collect_sources(pool: ThreadPoolExecutor, indication: str, mechanism: str, cutoff_date: Optional[str]) -> dict:
+def _collect_sources(
+    pool: ThreadPoolExecutor, indication: str, mechanism: str, cutoff_date: Optional[str], details: dict
+) -> dict:
     def submit(name: str, fn, *args, **kwargs) -> Future:
         """Run one fetch in the pool; a failure there yields [] (logged), never a failed run."""
         def run():
@@ -95,6 +102,9 @@ def _collect_sources(pool: ThreadPoolExecutor, indication: str, mechanism: str, 
     sci_future = submit("scientific", collect_scientific_sources, indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
     comm_future = submit("commercial", collect_commercial_sources, indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
     trials_future = submit("clinicaltrials", fetch_clinicaltrials, condition=indication, intervention=mechanism)
+    biomarker_future = submit(
+        "biomarker evidence", lambda: [fetch_biomarker_evidence(indication, mechanism, details.get("biomarkers"), cutoff_date)]
+    )
     target_future = (
         submit("target resolution", lambda: [(_resolve_entity(mechanism, "target") or {}).get("name") or ""])
         if not cutoff_date else None
@@ -188,6 +198,7 @@ def _collect_sources(pool: ThreadPoolExecutor, indication: str, mechanism: str, 
         futures["orange_book"] = submit("Orange Book", fetch_orange_book_patents, regulatory_records)
 
     results = {key: future.result() for key, future in futures.items()}
+    biomarker = (biomarker_future.result() or [{}])[0]
     return {
         "pubmed": pubmed_records,
         "opentargets": opentargets_records,
@@ -198,6 +209,8 @@ def _collect_sources(pool: ThreadPoolExecutor, indication: str, mechanism: str, 
         "market_news": results.get("market_news", []),
         "patents": results.get("patents", []),
         **{key: results.get(key, []) for key in present_day_keys},
+        "biomarker_trials": biomarker.get("biomarker_trials", []),
+        "biomarker_literature": biomarker.get("biomarker_literature", []),
     }
 
 
@@ -206,6 +219,7 @@ def run_pipeline(
     mechanism: str,
     extra_context: str = "",
     cutoff_date: Optional[str] = None,
+    details: Optional[dict] = None,
 ) -> tuple[list[Claim], dict, dict]:
     """Run the full committee and return (final_claims, cost_summary, sources).
 
@@ -218,6 +232,9 @@ def run_pipeline(
     extra_context carries the task brief's optional input info (modality,
     development stage, preclinical results, biomarkers, route of administration)
     as free text — every agent receives it if provided, but it's never required.
+    details is the same input as fields, used deterministically: the stage sets
+    where the financial model starts, the biomarkers drive extra trial and
+    literature searches.
 
     indication/mechanism are normalized (trimmed + lowercased) right here, once,
     before touching any fetcher, cache key, or LLM prompt — "cancer" and "Cancer"
@@ -234,7 +251,8 @@ def run_pipeline(
 
     reset_usage_log()
     reset_dropped_claims_log()
-    sources = collect_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
+    details = details or {}
+    sources = collect_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date, details=details)
     valid_sources = collect_valid_sources(sources=sources)
 
     # The raw `sources` above must reach the caller even if the LLM is totally
@@ -248,7 +266,7 @@ def run_pipeline(
         scientific_agent,
         indication=indication,
         mechanism=mechanism,
-        sources=sources["pubmed"] + sources["opentargets"],
+        sources=sources["pubmed"] + sources["opentargets"] + sources["biomarker_literature"],
         extra_context=extra_context,
         valid_sources=valid_sources,
         cutoff_date=cutoff_date,
@@ -284,9 +302,12 @@ def run_pipeline(
             sources=sources,
             indication=indication,
             mechanism=mechanism,
+            current_stage=details.get("stage"),
         )
     except Exception as e:
         print(f"[Pipeline Warning] Deterministic financials calculation failed: {e}")
+    # The cards show the model's stage, remaining steps and figures directly.
+    sources["financial_model"] = [financial_result.to_dict()] if financial_result else []
 
     try:
         final_claims = chair_agent(

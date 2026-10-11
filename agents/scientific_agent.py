@@ -229,8 +229,10 @@ def scientific_agent(
         notes = bundle["notes"]
     else:
         # Caller provided a flat sources list (e.g. pipeline.py): partition if groups exist
-        sci_groups = {"genetics", "tissue", "perturbation", "animal", "pathway", "clinical", "contradictory", "opentargets"}
-        trans_groups = {"translation", "clinical", "opentargets"}
+        # "biomarker": literature on the program's own biomarkers (pipeline.py,
+        # from the optional Biomarkers input) — evidence for both chains.
+        sci_groups = {"genetics", "tissue", "perturbation", "animal", "pathway", "clinical", "contradictory", "opentargets", "biomarker"}
+        trans_groups = {"translation", "clinical", "opentargets", "biomarker"}
 
         has_groups = any("group" in s for s in sources)
         if has_groups:

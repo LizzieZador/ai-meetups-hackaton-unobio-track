@@ -72,7 +72,7 @@ def build_report(
         "details": details or {},
         "verdict": verdict_claim.claim if verdict_claim else None,
         "verdict_reasoning": (verdict_claim.reasoning if verdict_claim else None),
-        "cards": build_cards(claims, sources, analogs, mechanism),
+        "cards": build_cards(claims, sources, analogs, mechanism, details),
         "cost": cost,
     }
 
@@ -132,7 +132,7 @@ def evaluate():
         return jsonify(error="Both Indication and Mechanism/Target are required."), 400
     details = parse_details(body.get("details"))
     try:
-        claims, cost, sources = run_pipeline(indication, mechanism, extra_context=details_context(details))
+        claims, cost, sources = run_pipeline(indication, mechanism, extra_context=details_context(details), details=details)
     except Exception as e:  # surface API-key / network problems to the UI instead of a 500 page
         return jsonify(error=f"Pipeline failed: {e}"), 500
     return jsonify(build_report(indication, mechanism, claims, cost, sources, details))

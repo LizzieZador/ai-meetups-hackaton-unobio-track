@@ -1,7 +1,7 @@
 """Deterministic financial modeling, capital requirement, and rNPV engine.
 
 Pure Python calculation engine — absolutely NO LLM math.
-Computes:
+Computes, from the program's development stage onward (passed stages are sunk):
 1. Capital model: Phase-by-phase trial costs based on AACT median enrollment
    and industry cost-per-patient benchmarks ($50k-$150k/patient).
 2. Development timeline and value inflection points (Phase 1, Phase 2 PoC, Phase 3).
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from schema import Claim
@@ -66,6 +66,53 @@ DEFAULT_PTRS_BENCHMARKS = {
         "Phase 3": {"low": 0.50, "base": 0.64, "high": 0.75},
     },
 }
+
+# Development stages, earliest first. The program's stage (from the optional
+# "Development stage" input) decides which steps are still ahead of it — only
+# those are paid for and risk-adjusted; passed stages are sunk.
+STAGES = ("Discovery", "Preclinical", "IND-enabling", "Phase 1", "Phase 2", "Phase 3", "Filed", "Approved")
+DEFAULT_STAGE = "Phase 1"
+
+# Pre-clinical steps: duration (years), cost ($M) and probability of reaching
+# Phase 1. Discovery = lead optimisation (85%) x preclinical (69%) and
+# Preclinical = 69%, from Paul et al., Nat Rev Drug Discov 2010; IND-enabling
+# (GLP tox + CMC on a selected candidate) is a model assumption. Costs are
+# planning benchmarks, not sourced figures.
+PRECLINICAL_BENCHMARKS = {
+    "Discovery": {"duration": 2.5, "cost": {"low": 8.0, "base": 15.0, "high": 25.0},
+                  "ptrs": {"low": 0.45, "base": 0.59, "high": 0.70}},
+    "Preclinical": {"duration": 1.5, "cost": {"low": 5.0, "base": 10.0, "high": 18.0},
+                    "ptrs": {"low": 0.55, "base": 0.69, "high": 0.80}},
+    "IND-enabling": {"duration": 0.75, "cost": {"low": 3.0, "base": 6.0, "high": 10.0},
+                     "ptrs": {"low": 0.65, "base": 0.75, "high": 0.85}},
+}
+# NDA/BLA submission -> approval (Paul et al. 2010: 91%).
+FILING_PTRS = {"low": 0.85, "base": 0.90, "high": 0.95}
+
+STEP_MILESTONES = {
+    "Discovery": ("Development candidate nominated", "Lead series optimised to a candidate with in vivo efficacy."),
+    "Preclinical": ("Preclinical package complete", "In vivo efficacy, PK and early safety support IND-enabling work."),
+    "IND-enabling": ("IND / CTA cleared", "GLP toxicology and CMC allow first-in-human dosing."),
+    "Phase 1": ("Phase 1 First-in-Human PK/PD & Safety Readout",
+                "Confirms human tolerability, therapeutic exposure, and biological target engagement."),
+    "Phase 2": ("Phase 2 Proof-of-Concept (PoC) & Primary Efficacy Readout",
+                "Major equity re-rating inflection point (~3x-5x value step-change); primary window for pharma partnership or M&A."),
+    "Phase 3": ("Phase 3 Pivotal Primary Endpoint Readout",
+                "Statistical validation for BLA/NDA filing; removes technical development risk."),
+    "Regulatory Review": ("FDA/EMA Approval & Commercial Launch",
+                          "Regulatory clearance and initial commercial product revenue generation."),
+}
+
+
+def normalize_stage(stage: Optional[str]) -> tuple[str, bool]:
+    """(stage, assumed): the form's stage label mapped onto STAGES; anything
+    missing or unrecognised falls back to Phase 1 and is flagged as assumed."""
+    text = (stage or "").strip().lower()
+    for name in STAGES:
+        if text.startswith(name.lower()) or (name == "Filed" and ("nda" in text or "bla" in text)):
+            return name, False
+    return DEFAULT_STAGE, True
+
 
 # Annual post-launch revenue ramp (% of peak sales achieved each year of exclusivity)
 REVENUE_RAMP_CURVE = [
@@ -118,6 +165,11 @@ class FinancialResult:
     therapeutic_area: str
     assumptions_summary: dict[str, Any]
 
+    # Program stage the model starts from, and the steps still ahead of it
+    current_stage: str = DEFAULT_STAGE
+    stage_assumed: bool = True
+    development_steps: list[dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "peak_sales_millions": self.peak_sales_millions,
@@ -138,6 +190,9 @@ class FinancialResult:
             "is_biomarker_selected": self.is_biomarker_selected,
             "therapeutic_area": self.therapeutic_area,
             "assumptions_summary": self.assumptions_summary,
+            "current_stage": self.current_stage,
+            "stage_assumed": self.stage_assumed,
+            "development_steps": self.development_steps,
         }
 
 
@@ -292,7 +347,7 @@ def calculate_financials(
     ptrs_per_phase: dict[str, dict[str, float]],
     indication: str = "",
     mechanism: str = "",
-    current_stage: str = "Phase 1",
+    current_stage: Optional[str] = None,
     discount_rate: float = DEFAULT_DISCOUNT_RATE,
     commercial_margin: float = DEFAULT_COMMERCIAL_MARGIN,
     cost_per_patient: Optional[dict[str, dict[str, float]]] = None,
@@ -305,7 +360,8 @@ def calculate_financials(
         ptrs_per_phase: Dict of phase -> {"low": float, "base": float, "high": float}
         indication: Indication name string
         mechanism: Mechanism name string
-        current_stage: Current stage of the program ("Preclinical", "Phase 1", "Phase 2")
+        current_stage: The program's development stage (any of STAGES; None -> Phase 1, flagged
+            as assumed). Only the steps still ahead of it are costed and risk-adjusted.
         discount_rate: Annual discount rate (WACC), e.g. 0.105 (10.5%)
         commercial_margin: Net operating margin on product sales, e.g. 0.75 (75%)
         cost_per_patient: Optional override for cost per patient by phase
@@ -320,149 +376,107 @@ def calculate_financials(
     is_oncology = any(k in ind_lower for k in ("cancer", "carcinoma", "tumor", "oncology", "nsclc"))
     therapeutic_area = "Oncology" if is_oncology else "General Therapeutics"
 
-    # 1. Cumulative PTRS calculation
-    cumulative_ptrs: dict[str, float] = {}
-    for s in scenarios:
-        p_cum = ptrs_per_phase["Phase 1"][s] * ptrs_per_phase["Phase 2"][s] * ptrs_per_phase["Phase 3"][s]
-        cumulative_ptrs[s] = round(p_cum, 4)
+    stage, stage_assumed = normalize_stage(current_stage)
 
-    # 2. Phase-by-phase trial cost model ($ Millions)
+    # 1. Phase-by-phase trial cost model ($ Millions)
     # Trial Cost = Enrollment * Cost_per_patient * Overhead_Factor (1.25 for CRO/site setup/CMC supply)
     overhead_factor = 1.25
-    phase_costs_millions: dict[str, dict[str, float]] = {
-        "Phase 1": {},
-        "Phase 2": {},
-        "Phase 3": {},
-    }
-
+    phase_costs_millions: dict[str, dict[str, float]] = {}
     for ph in ("Phase 1", "Phase 2", "Phase 3"):
         n_pts = enrollment_by_phase.get(ph, 100)
-        for s in scenarios:
-            c_pt = cost_patient[ph][s]
-            raw_cost = n_pts * c_pt * overhead_factor
-            phase_costs_millions[ph][s] = round(raw_cost / 1e6, 2)
+        phase_costs_millions[ph] = {
+            s: round(n_pts * cost_patient[ph][s] * overhead_factor / 1e6, 2) for s in scenarios
+        }
+
+    # 2. The development steps still ahead of the program, in order. Passed
+    # stages are sunk: neither paid for again nor risk-adjusted again.
+    steps: list[dict[str, Any]] = []
+    if stage in PRECLINICAL_BENCHMARKS:
+        bench = PRECLINICAL_BENCHMARKS[stage]
+        steps.append({"name": stage, "duration": bench["duration"], "cost": dict(bench["cost"]), "ptrs": dict(bench["ptrs"])})
+    for ph in ("Phase 1", "Phase 2", "Phase 3"):
+        if STAGES.index(stage) <= STAGES.index(ph):
+            steps.append({"name": ph, "duration": DEFAULT_PHASE_DURATIONS[ph],
+                          "cost": dict(phase_costs_millions[ph]), "ptrs": dict(ptrs_per_phase[ph])})
+    if stage != "Approved":
+        # Approval odds sit inside the Phase 3 PTRS ("Phase 3 -> Approval");
+        # only a program already filed carries a separate review risk.
+        review_ptrs = dict(FILING_PTRS) if stage == "Filed" else {s: 1.0 for s in scenarios}
+        steps.append({"name": "Regulatory Review", "duration": DEFAULT_PHASE_DURATIONS["Regulatory Review"],
+                      "cost": {s: 0.0 for s in scenarios}, "ptrs": review_ptrs})
+
+    cumulative_ptrs = {s: round(math.prod(st["ptrs"][s] for st in steps), 4) for s in scenarios}
 
     # 3. Capital to next milestone and total capital to launch ($ Millions)
-    capital_to_next_milestone_millions: dict[str, float] = {}
-    total_capital_to_launch_millions: dict[str, float] = {}
-
-    launch_prep = {
-        "low": DEFAULT_LAUNCH_PREP_COST_MILLIONS * 0.8,
-        "base": DEFAULT_LAUNCH_PREP_COST_MILLIONS,
-        "high": DEFAULT_LAUNCH_PREP_COST_MILLIONS * 1.3,
+    launch_prep = (
+        {s: 0.0 for s in scenarios} if stage == "Approved" else {
+            "low": DEFAULT_LAUNCH_PREP_COST_MILLIONS * 0.8,
+            "base": DEFAULT_LAUNCH_PREP_COST_MILLIONS,
+            "high": DEFAULT_LAUNCH_PREP_COST_MILLIONS * 1.3,
+        }
+    )
+    first = steps[0] if steps else None
+    # The next milestone is the end of the step under way; for a filed program
+    # that is approval, so what it needs next is the launch build-out.
+    capital_to_next_milestone_millions = {
+        s: round((first["cost"][s] or launch_prep[s]) if first else 0.0, 1) for s in scenarios
     }
+    total_capital_to_launch_millions = {
+        s: round(sum(st["cost"][s] for st in steps) + launch_prep[s], 1) for s in scenarios
+    }
+    timeline_next_months = int(first["duration"] * 12) if first else 0
+    timeline_launch_years = round(sum(st["duration"] for st in steps), 1)
 
-    for s in scenarios:
-        # Next major milestone: completion of the next clinical phase
-        # If in Phase 1 / preclinical, next milestone is Phase 1 PK/PD & Safety proof-of-mechanism
-        c_next = phase_costs_millions["Phase 1"][s]
-        capital_to_next_milestone_millions[s] = round(c_next, 1)
+    # 4. Value inflection points — one per remaining step
+    inflection_points = []
+    elapsed = 0.0
+    for st in steps:
+        elapsed += st["duration"]
+        milestone, effect = STEP_MILESTONES[st["name"]]
+        inflection_points.append({
+            "milestone": milestone,
+            "time_months": int(elapsed * 12),
+            "capital_required_millions": round(
+                st["cost"]["base"] if st["name"] != "Regulatory Review" else launch_prep["base"], 1
+            ),
+            "derisking_effect": effect,
+        })
 
-        # Total capital required across all phases + launch preparation
-        tot = (
-            phase_costs_millions["Phase 1"][s]
-            + phase_costs_millions["Phase 2"][s]
-            + phase_costs_millions["Phase 3"][s]
-            + launch_prep[s]
-        )
-        total_capital_to_launch_millions[s] = round(tot, 1)
-
-    timeline_next_months = int(DEFAULT_PHASE_DURATIONS["Phase 1"] * 12)
-    timeline_launch_years = round(
-        DEFAULT_PHASE_DURATIONS["Phase 1"]
-        + DEFAULT_PHASE_DURATIONS["Phase 2"]
-        + DEFAULT_PHASE_DURATIONS["Phase 3"]
-        + DEFAULT_PHASE_DURATIONS["Regulatory Review"],
-        1,
-    )
-
-    # 4. Value Inflection Points
-    inflection_points = [
-        {
-            "milestone": "Phase 1 First-in-Human PK/PD & Safety Readout",
-            "time_months": int(DEFAULT_PHASE_DURATIONS["Phase 1"] * 12),
-            "capital_required_millions": capital_to_next_milestone_millions["base"],
-            "derisking_effect": "Confirms human tolerability, therapeutic exposure, and biological target engagement.",
-        },
-        {
-            "milestone": "Phase 2 Proof-of-Concept (PoC) & Primary Efficacy Readout",
-            "time_months": int((DEFAULT_PHASE_DURATIONS["Phase 1"] + DEFAULT_PHASE_DURATIONS["Phase 2"]) * 12),
-            "capital_required_millions": phase_costs_millions["Phase 2"]["base"],
-            "derisking_effect": "Major equity re-rating inflection point (~3x-5x value step-change); primary window for pharma partnership or M&A.",
-        },
-        {
-            "milestone": "Phase 3 Pivotal Primary Endpoint (OS/PFS) Readout",
-            "time_months": int((DEFAULT_PHASE_DURATIONS["Phase 1"] + DEFAULT_PHASE_DURATIONS["Phase 2"] + DEFAULT_PHASE_DURATIONS["Phase 3"]) * 12),
-            "capital_required_millions": phase_costs_millions["Phase 3"]["base"],
-            "derisking_effect": "Statistical validation for BLA/NDA filing; removes technical development risk.",
-        },
-        {
-            "milestone": "FDA/EMA Approval & Commercial Launch",
-            "time_months": int(timeline_launch_years * 12),
-            "capital_required_millions": round(launch_prep["base"], 1),
-            "derisking_effect": "Regulatory clearance and initial commercial product revenue generation.",
-        },
-    ]
-
-    # 5. Discounted Cash Flow (DCF) rNPV Calculation with Time-Value of Money
-    # Development timeline milestones (years from now t=0)
-    t_p1_mid = DEFAULT_PHASE_DURATIONS["Phase 1"] / 2.0
-    t_p2_mid = DEFAULT_PHASE_DURATIONS["Phase 1"] + (DEFAULT_PHASE_DURATIONS["Phase 2"] / 2.0)
-    t_p3_mid = (
-        DEFAULT_PHASE_DURATIONS["Phase 1"]
-        + DEFAULT_PHASE_DURATIONS["Phase 2"]
-        + (DEFAULT_PHASE_DURATIONS["Phase 3"] / 2.0)
-    )
+    # 5. Discounted Cash Flow (DCF) rNPV with time-value of money. Each step's
+    # cost is spent at its midpoint, and only if every earlier step succeeded.
     t_launch = timeline_launch_years
-
     pv_dev_cost: dict[str, float] = {}
     pv_commercial: dict[str, float] = {}
     rnpv: dict[str, float] = {}
-
     for s in scenarios:
-        # Development cash outflows discounted to t=0 and risk-adjusted by stage-gate success
-        # Phase 1 is spent upfront (prob = 1.0)
-        pv_c1 = phase_costs_millions["Phase 1"][s] / math.pow(1.0 + discount_rate, t_p1_mid)
-
-        # Phase 2 is spent only if Phase 1 succeeds (prob = PTRS_P1)
-        prob_p2 = ptrs_per_phase["Phase 1"][s]
-        pv_c2 = (phase_costs_millions["Phase 2"][s] * prob_p2) / math.pow(1.0 + discount_rate, t_p2_mid)
-
-        # Phase 3 is spent only if Phase 1 and 2 succeed (prob = PTRS_P1 * PTRS_P2)
-        prob_p3 = ptrs_per_phase["Phase 1"][s] * ptrs_per_phase["Phase 2"][s]
-        pv_c3 = (phase_costs_millions["Phase 3"][s] * prob_p3) / math.pow(1.0 + discount_rate, t_p3_mid)
-
-        # Launch prep spent at t_launch - 0.5 (prob = cumulative PTRS)
-        prob_launch = cumulative_ptrs[s]
-        pv_launch = (launch_prep[s] * prob_launch) / math.pow(1.0 + discount_rate, t_launch - 0.5)
-
-        total_pv_dev = pv_c1 + pv_c2 + pv_c3 + pv_launch
+        total_pv_dev, t_start, p_reach = 0.0, 0.0, 1.0
+        for st in steps:
+            total_pv_dev += st["cost"][s] * p_reach / math.pow(1.0 + discount_rate, t_start + st["duration"] / 2.0)
+            p_reach *= st["ptrs"][s]
+            t_start += st["duration"]
+        if launch_prep[s]:
+            # Launch prep spent half a year before launch, if the program gets there
+            total_pv_dev += launch_prep[s] * cumulative_ptrs[s] / math.pow(1.0 + discount_rate, max(t_launch - 0.5, 0.0))
         pv_dev_cost[s] = round(total_pv_dev, 1)
 
-        # Commercial cash inflows discounted to t=0
-        # Post-launch revenue ramp across 10 years of exclusivity
-        peak_rev = peak_sales_millions[s]
+        # Commercial cash inflows: post-launch revenue ramp across 10 years of exclusivity
         pv_comm_inflows = 0.0
-
         for yr_idx, ramp_pct in enumerate(REVENUE_RAMP_CURVE, start=1):
-            yr_time = t_launch + yr_idx
-            annual_rev = peak_rev * ramp_pct
-            annual_net_cash = annual_rev * commercial_margin
-            discount_factor = 1.0 / math.pow(1.0 + discount_rate, yr_time)
-            pv_comm_inflows += annual_net_cash * discount_factor
+            annual_net_cash = peak_sales_millions[s] * ramp_pct * commercial_margin
+            pv_comm_inflows += annual_net_cash / math.pow(1.0 + discount_rate, t_launch + yr_idx)
 
         # Risk-adjust commercial inflows by cumulative probability of reaching market
         risk_adjusted_pv_comm = pv_comm_inflows * cumulative_ptrs[s]
         pv_commercial[s] = round(risk_adjusted_pv_comm, 1)
-
-        # Final rNPV = PV(Commercial Inflows) - PV(Development Outflows)
-        net_rnpv = risk_adjusted_pv_comm - total_pv_dev
-        rnpv[s] = round(net_rnpv, 1)
+        rnpv[s] = round(risk_adjusted_pv_comm - total_pv_dev, 1)
 
     # 6. Out-licensing terms benchmark at Phase 2 PoC
     base_rnpv = rnpv["base"]
+    poc_month = next((p["time_months"] for p in inflection_points if p["milestone"].startswith("Phase 2")), None)
     licensing_terms = {
-        "timing": f"Month {int((DEFAULT_PHASE_DURATIONS['Phase 1'] + DEFAULT_PHASE_DURATIONS['Phase 2']) * 12)} (Post-Phase 2 PoC)",
+        "timing": (f"Month {poc_month} (Post-Phase 2 PoC)" if poc_month is not None
+                   else "Now — Phase 2 PoC already passed; terms benchmark the current asset"),
+        "poc_month": poc_month,
         "upfront_cash_millions": round(max(20.0, base_rnpv * 0.18), 1),
         "development_milestones_millions": round(max(50.0, base_rnpv * 0.35), 1),
         "commercial_milestones_millions": round(max(100.0, base_rnpv * 0.50), 1),
@@ -478,6 +492,7 @@ def calculate_financials(
         "commercial_exclusivity_years": DEFAULT_COMMERCIAL_LIFE_YEARS,
         "cost_per_patient_base": {ph: f"${cost_patient[ph]['base']:,.0f}" for ph in cost_patient},
         "median_enrollment_applied": enrollment_by_phase,
+        "program_stage": stage + (" (assumed — no stage given)" if stage_assumed else ""),
     }
 
     return FinancialResult(
@@ -500,6 +515,12 @@ def calculate_financials(
         is_biomarker_selected=any("biomarker" in str(v).lower() for v in ptrs_per_phase.values()),
         therapeutic_area=therapeutic_area,
         assumptions_summary=assumptions_summary,
+        current_stage=stage,
+        stage_assumed=stage_assumed,
+        development_steps=[
+            {"name": st["name"], "duration_years": st["duration"], "cost_millions": st["cost"], "ptrs": st["ptrs"]}
+            for st in steps
+        ],
     )
 
 
@@ -509,7 +530,7 @@ def run_deterministic_financials(
     sources: Optional[dict] = None,
     indication: str = "",
     mechanism: str = "",
-    current_stage: str = "Phase 1",
+    current_stage: Optional[str] = None,
 ) -> FinancialResult:
     """End-to-end wrapper: extracts all upstream inputs and executes the financial model."""
     peak_sales = extract_peak_sales(commercial_claims, sources, indication, mechanism)
@@ -543,11 +564,11 @@ def format_financial_brief_for_chair(result: FinancialResult) -> str:
         "==================================================================",
         "DETERMINISTIC FINANCIAL & VALUATION MODEL (CALCULATED IN CODE):",
         "==================================================================",
+        f"0. PROGRAM STAGE: {stage_text(r)} — the model costs and risk-adjusts ONLY the steps still ahead: "
+        f"{' -> '.join(st['name'] for st in r.development_steps) or 'none (already approved; commercial value only)'}",
         f"1. PEAK ANNUAL SALES: Low = ${p['low']:.1f}M, Base = ${p['base']:.1f}M, High = ${p['high']:.1f}M",
-        f"2. CUMULATIVE PTRS (Probability of Success to Approval): Low = {ptrs['low']*100:.1f}%, Base = {ptrs['base']*100:.1f}%, High = {ptrs['high']*100:.1f}%",
-        f"   - Phase 1 PTRS: {r.ptrs_per_phase['Phase 1']['base']*100:.0f}% (Phase 1 -> 2)",
-        f"   - Phase 2 PTRS: {r.ptrs_per_phase['Phase 2']['base']*100:.0f}% (Phase 2 -> 3)",
-        f"   - Phase 3 PTRS: {r.ptrs_per_phase['Phase 3']['base']*100:.0f}% (Phase 3 -> Approval)",
+        f"2. CUMULATIVE PTRS FROM THE CURRENT STAGE (Probability of Success to Approval): Low = {ptrs['low']*100:.1f}%, Base = {ptrs['base']*100:.1f}%, High = {ptrs['high']*100:.1f}%",
+        *[f"   - {st['name']} success: {st['ptrs']['base']*100:.0f}%" for st in r.development_steps if st["ptrs"]["base"] < 1.0],
         "3. CAPITAL REQUIREMENTS (from AACT median enrollments & benchmark costs):",
         f"   - Capital to Next Major Milestone ({r.timeline_to_next_milestone_months} months): Low = ${cap_next['low']:.1f}M, Base = ${cap_next['base']:.1f}M, High = ${cap_next['high']:.1f}M",
         f"   - Total Capital to Commercial Launch ({r.timeline_to_launch_years:.1f} years): Low = ${cap_tot['low']:.1f}M, Base = ${cap_tot['base']:.1f}M, High = ${cap_tot['high']:.1f}M",
@@ -557,7 +578,7 @@ def format_financial_brief_for_chair(result: FinancialResult) -> str:
         f"   * Low Scenario:  rNPV = ${val['low']:.1f}M (PV Inflows: ${r.pv_commercial_millions['low']:.1f}M - PV Outflows: ${r.pv_development_cost_millions['low']:.1f}M)",
         f"   * Base Scenario: rNPV = ${val['base']:.1f}M (PV Inflows: ${r.pv_commercial_millions['base']:.1f}M - PV Outflows: ${r.pv_development_cost_millions['base']:.1f}M)",
         f"   * High Scenario: rNPV = ${val['high']:.1f}M (PV Inflows: ${r.pv_commercial_millions['high']:.1f}M - PV Outflows: ${r.pv_development_cost_millions['high']:.1f}M)",
-        "5. EXIT & LICENSING BENCHMARKS AT PHASE 2 PoC:",
+        f"5. EXIT & LICENSING BENCHMARKS ({lic['timing']}):",
         f"   - Upfront Cash: ${lic['upfront_cash_millions']:.1f}M",
         f"   - Total Deal Value: ${lic['estimated_total_deal_value_millions']:.1f}M (including dev & commercial milestones, {lic['tiered_royalties_range']})",
         "==================================================================",
@@ -568,6 +589,10 @@ def format_financial_brief_for_chair(result: FinancialResult) -> str:
         "==================================================================",
     ]
     return "\n".join(lines)
+
+
+def stage_text(r: FinancialResult) -> str:
+    return f"{r.current_stage} (assumed — no development stage given)" if r.stage_assumed else r.current_stage
 
 
 def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]:
@@ -587,6 +612,8 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
             type="inference",
             section="recommendation",
             reasoning=(
+                f"Modeled from the program's stage, {stage_text(r)}: only the remaining steps "
+                f"({' -> '.join(st['name'] for st in r.development_steps) or 'none — approved'}) are costed and risk-adjusted. "
                 f"Discounted cash flow rNPV modeled in financials.py at {r.discount_rate*100:.1f}% WACC with 10-year commercial exclusivity. "
                 f"Low scenario: {ptrs['low']*100:.1f}% cumulative PTRS on ${p['low']:.1f}M peak sales with ${cap_tot['high']:.1f}M capital. "
                 f"Base scenario: {ptrs['base']*100:.1f}% cumulative PTRS on ${p['base']:.1f}M peak sales with ${cap_tot['base']:.1f}M capital. "
@@ -602,10 +629,7 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
             ),
             type="inference",
             section="capital_required",
-            reasoning=(
-                f"Calculated deterministically from clinical trial modeling: Phase 1 enrollment of {r.enrollment_by_phase['Phase 1']} patients "
-                f"at benchmark cost of ${r.cost_per_patient['Phase 1']['base']:,.0f}/patient plus CRO site and CMC formulation overhead."
-            ),
+            reasoning=next_step_reasoning(r),
             confidence="high",
         ),
         # Claim 3: Total capital to commercial approval & launch
@@ -616,17 +640,16 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
             ),
             type="inference",
             section="capital_required",
-            reasoning=(
-                f"Encompasses Phase 1 (${r.phase_costs_millions['Phase 1']['base']:.1f}M), Phase 2 (${r.phase_costs_millions['Phase 2']['base']:.1f}M, {r.enrollment_by_phase['Phase 2']} pts), "
-                f"Phase 3 (${r.phase_costs_millions['Phase 3']['base']:.1f}M, {r.enrollment_by_phase['Phase 3']} pts), and commercial launch prep (${DEFAULT_LAUNCH_PREP_COST_MILLIONS:.1f}M)."
-            ),
+            reasoning=total_capital_reasoning(r),
             confidence="high",
         ),
         # Claim 4: Value inflection points & M&A / licensing outcomes
         Claim(
             claim=(
-                f"Primary value inflection point occurs at Phase 2 Proof-of-Concept readout (Month 42), unlocking estimated "
-                f"out-licensing deal value of ${lic['estimated_total_deal_value_millions']:.1f}M with ${lic['upfront_cash_millions']:.1f}M upfront."
+                (f"Primary value inflection point occurs at Phase 2 Proof-of-Concept readout (Month {lic['poc_month']}), unlocking estimated "
+                 if lic.get("poc_month") is not None else
+                 f"Phase 2 Proof-of-Concept is already behind this {r.current_stage} program; partnering now benchmarks at an estimated ")
+                + f"out-licensing deal value of ${lic['estimated_total_deal_value_millions']:.1f}M with ${lic['upfront_cash_millions']:.1f}M upfront."
             ),
             type="inference",
             section="capital_required",
@@ -639,3 +662,28 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
     ]
     return claims
 
+
+def total_capital_reasoning(r: FinancialResult) -> str:
+    if not r.development_steps:
+        return "The program is already approved: no development or launch-preparation capital remains in the model."
+    parts = [
+        f"{st['name']} (${st['cost_millions']['base']:.1f}M"
+        + (f", {r.enrollment_by_phase[st['name']]} pts" if st["name"] in r.enrollment_by_phase else "") + ")"
+        for st in r.development_steps if st["cost_millions"]["base"]
+    ]
+    parts.append(f"commercial launch prep (${DEFAULT_LAUNCH_PREP_COST_MILLIONS:.1f}M)")
+    return f"From {stage_text(r)}, encompasses " + (", ".join(parts[:-1]) + ", and " if len(parts) > 1 else "") + parts[-1] + "."
+
+
+def next_step_reasoning(r: FinancialResult) -> str:
+    if not r.development_steps:
+        return "The program is already approved: no development capital remains; value is commercial execution."
+    st = r.development_steps[0]
+    if st["name"] in r.enrollment_by_phase:
+        return (f"Next milestone for a {stage_text(r)} program is the end of {st['name']}: enrollment of "
+                f"{r.enrollment_by_phase[st['name']]} patients at benchmark cost of "
+                f"${r.cost_per_patient[st['name']]['base']:,.0f}/patient plus CRO site and CMC formulation overhead.")
+    if st["name"] == "Regulatory Review":
+        return "The program is filed: the next milestone is approval, and the capital it needs is the commercial launch build-out."
+    return (f"Next milestone for a {stage_text(r)} program: {STEP_MILESTONES[st['name']][0].lower()} — "
+            f"planning benchmark of ${st['cost_millions']['base']:.1f}M over {st['duration_years']} years.")

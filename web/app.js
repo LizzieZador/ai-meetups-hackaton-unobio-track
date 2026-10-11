@@ -441,7 +441,7 @@ function renderCardBody(card, chartIdPrefix) {
         (isModal ? renderGraphDataTable(card) : "")
       : `<p class="placeholder">${card.wired ? "No results yet" : "No connected source yet"}</p>`;
   } else if (card.view === "composite") {
-    inner = renderComposite(card);
+    inner = renderComposite(card) + (card.show_claims_below ? renderClaimsOnly(card) : "");
   } else if (card.view === "timeline") {
     inner = renderTimeline(card);
   } else {
@@ -671,7 +671,7 @@ function show(report) {
     </div>
     ${detailChips(report.details)}
     <div class="grid">${report.cards.map(renderCard).join("")}</div>
-    <p class="cost">~$${esc(c.approx_cost_usd)} · ${esc(c.calls)} calls · ${esc(c.model)}</p>`;
+    <p class="cost">${costLine(c)}</p>`;
   $("content").querySelectorAll(".expand").forEach((b) => {
     b.onclick = () => openCard(current.cards.find((x) => x.id === b.dataset.card));
   });
@@ -691,7 +691,33 @@ document.addEventListener("click", (e) => {
   if (wrap && !wrap.contains(e.target)) wrap.classList.remove("pinned");
 });
 
+// fetch() rejects with a TypeError only when the server can't be reached at
+// all (stopped, restarted mid-request, network down) — its own message is just
+// "Failed to fetch", which tells a client nothing.
+const OFFLINE_MESSAGE =
+  "Lost connection to the server — it may have been stopped or restarted. Make sure server.py is running and try again.";
+const requestError = (e) => (e instanceof TypeError ? OFFLINE_MESSAGE : e.message);
+
+/* What this run spent on the LLM: real token counts, plus how many answers
+   came free from the prompt cache. The gateway publishes no price, so the
+   dollar figure appears only once one is set in .env (otherwise "price n/a"). */
+function costLine(c) {
+  const n = (v) => Number(v || 0).toLocaleString("en-US");
+  const parts = [`${n(c.input_tokens)} in / ${n(c.output_tokens)} out tokens`, `${n(c.calls)} LLM call${c.calls === 1 ? "" : "s"}`];
+  if (c.cached_calls) parts.push(`${n(c.cached_calls)} from cache (free)`);
+  if (c.calls) parts.push(c.model);
+  // Reports saved before cached_calls existed carry the old placeholder $0
+  // for the gateway — not a real price, so they show "price n/a" too.
+  const priced = typeof c.approx_cost_usd === "number" && "cached_calls" in c;
+  parts.push(!c.calls ? "$0" : priced ? `~$${c.approx_cost_usd.toFixed(4)}` : "price n/a");
+  return esc(parts.join(" · "));
+}
+
 async function evaluate(body) {
+  // One evaluation at a time: the welcome box, history, the assistant's
+  // "Run this search" and Evaluate could each start a second, paid run in
+  // parallel, and the slower response then overwrote the newer one.
+  if (pendingQuery) return;
   $("evaluate").disabled = true;
   pendingQuery = body.query || `${body.mechanism} | ${body.indication}`;
   closeModal();
@@ -713,7 +739,7 @@ async function evaluate(body) {
     renderHistory(searchKey(entry));
     show(data);
   } catch (e) {
-    $("content").innerHTML = `<p class="error">${esc(e.message)}</p>`;
+    $("content").innerHTML = `<p class="error">${esc(requestError(e))}</p>`;
   } finally {
     pendingQuery = null;
     updateEvaluateEnabled();
@@ -735,9 +761,10 @@ function setSearchMode(mode) {
 
 function updateEvaluateEnabled() {
   $("evaluate").disabled =
-    searchMode === "detailed"
+    !!pendingQuery ||
+    (searchMode === "detailed"
       ? !($("indication").value.trim() && $("mechanism").value.trim())
-      : !$("query").value.trim();
+      : !$("query").value.trim());
 }
 
 $("search-mode-toggle").onclick = () => setSearchMode(searchMode === "detailed" ? "quick" : "detailed");
@@ -958,6 +985,7 @@ function appendAssistantSearch(search) {
     <span class="assistant-search-terms">${esc(search.mechanism)} <span class="label">in</span> ${esc(search.indication)}</span>
     <button type="button" class="assistant-search-run">Run this search</button>`;
   div.querySelector(".assistant-search-run").onclick = () => {
+    if (pendingQuery) return; // an evaluation is already running
     setSearchMode("detailed");
     $("indication").value = search.indication;
     $("mechanism").value = search.mechanism;
@@ -1107,7 +1135,7 @@ $("assistant-form").onsubmit = async (e) => {
     }
   } catch (err) {
     pending.remove();
-    if (activeChatId === chatId) appendAssistantMsg("Assistant", err.message, "note");
+    if (activeChatId === chatId) appendAssistantMsg("Assistant", requestError(err), "note");
   } finally {
     updateAssistantSendEnabled();
   }
@@ -1156,6 +1184,7 @@ $("welcome-form").onsubmit = (e) => {
   if (!query) return;
   $("welcome-go").disabled = true;
   leaveWelcome(() => {
+    if (pendingQuery) return; // back to the evaluation already running
     setSearchMode("quick");
     $("query").value = query;
     updateEvaluateEnabled();
