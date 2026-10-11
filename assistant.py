@@ -127,8 +127,14 @@ def _tool_drugs(args: dict) -> str:
     return "\n".join(lines) or "no drugs found for that indication"
 
 
+def _flag(value) -> bool:
+    """The planner writes booleans as JSON true or as text ("false") — the
+    string "false" is truthy in Python and used to switch the filter ON."""
+    return value is True or str(value).strip().lower() in ("true", "yes", "1")
+
+
 def _tool_trials(args: dict) -> str:
-    status = "RECRUITING,ACTIVE_NOT_RECRUITING,NOT_YET_RECRUITING" if args.get("active_only") else None
+    status = "RECRUITING,ACTIVE_NOT_RECRUITING,NOT_YET_RECRUITING" if _flag(args.get("active_only")) else None
     trials = fetch_clinicaltrials(args["indication"], args.get("intervention") or "", max_results=MAX_RECORDS, status_filter=status)
     return "\n".join(
         f"- {t['nctId']} | {t.get('briefTitle')} | {', '.join(t.get('phases') or []) or 'phase n/a'} | {t.get('overallStatus')} | "
@@ -159,7 +165,7 @@ def _tool_patents(args: dict) -> str:
 
 
 def _tool_profile(args: dict) -> str:
-    p = fetch_drug_profile(args["drug"])
+    p = fetch_drug_profile(_to_generic(args["drug"]))
     if not p:
         return "no exact Open Targets drug match"
     return (f"- {p['name']} ({p['chembl_id']}) | type: {p.get('drug_type')} | max stage: {p.get('stage')} | "
@@ -280,20 +286,49 @@ def _plan(message: str, history_text: str, report: dict | None, screen: dict) ->
     )
     try:
         raw = ask_assistant_reply(_PLAN_PROMPT, prompt, max_tokens=800)
-        plan = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-    except (ValueError, json.JSONDecodeError):
-        return []
     except Exception as e:
         print(f"[Assistant Warning] planning failed: {e}")
         return []
-    lookups = [l for l in plan.get("lookups") or [] if isinstance(l, dict) and l.get("tool") in TOOLS]
-    return lookups[:MAX_TOOLS]
+    plan = _first_json_object(raw, "lookups")
+    lookups = plan.get("lookups") if isinstance(plan.get("lookups"), list) else []
+    return [l for l in lookups if isinstance(l, dict) and l.get("tool") in TOOLS][:MAX_TOOLS]
+
+
+def _first_json_object(text: str, key: str) -> dict:
+    """The first JSON object in `text` that has `key` — scanning every "{", so
+    prose with its own braces or a markdown fence around the JSON can't hide it
+    (slicing first "{" to last "}" broke on "Plan {a}: {...}")."""
+    decoder = json.JSONDecoder()
+    i = (text or "").find("{")
+    while i != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, i)
+            if isinstance(obj, dict) and key in obj:
+                return obj
+        except json.JSONDecodeError:
+            pass
+        i = text.find("{", i + 1)
+    return {}
+
+
+_REQUIRED_ARGS = {
+    "drugs_for_indication": ["indication"], "clinical_trials": ["indication"], "literature": ["query"],
+    "target_disease_evidence": ["mechanism", "indication"], "drug_profile": ["drug"],
+    "fda_approvals": ["drugs"], "us_patents_exclusivity": ["drugs"], "drug_safety": ["drugs"],
+    "drug_labels": ["drugs"], "eu_approvals": ["drugs"], "medicare_spending": ["drugs"],
+    "biologic_exclusivity": ["drugs"], "company_filings": ["terms"], "worldwide_patents": ["terms"],
+}
 
 
 def _run_tools(lookups: list[dict]) -> str:
     blocks = []
     for lookup in lookups:
-        name, args = lookup["tool"], lookup.get("args") or {}
+        name = lookup["tool"]
+        args = lookup.get("args") if isinstance(lookup.get("args"), dict) else {}
+        missing = [a for a in _REQUIRED_ARGS.get(name, []) if not args.get(a)]
+        if missing:
+            blocks.append(f"### {name} {json.dumps(args, ensure_ascii=False)}\nnot run — missing argument(s): {', '.join(missing)}")
+            continue
         try:
             result = TOOLS[name][1](args)
         except Exception as e:  # a missing arg or an API outage costs only this tool
@@ -377,16 +412,28 @@ memory is the last {MAX_HISTORY_TURNS} exchanges of the open chat."""
 
 
 def _format_history(history: list[dict]) -> str:
-    trimmed = history[-(MAX_HISTORY_TURNS * 2):]
-    return "\n".join(f"{'User' if h.get('role') == 'user' else 'Assistant'}: {h.get('text', '')}" for h in trimmed)
+    # Entries come from the browser's localStorage — skip anything malformed.
+    valid = [h for h in history if isinstance(h, dict) and h.get("text")] if isinstance(history, list) else []
+    trimmed = valid[-(MAX_HISTORY_TURNS * 2):]
+    return "\n".join(f"{'User' if h.get('role') == 'user' else 'Assistant'}: {h['text']}" for h in trimmed)
 
 
-_SEARCH_LINE = re.compile(r"^\s*SEARCH:\s*(.+?)\s*\|\s*(.+?)\s*$", re.I | re.M)
+# A SEARCH line anywhere in the reply, optionally wrapped in markdown bold.
+_SEARCH_LINE = re.compile(r"^[ \t]*\**[ \t]*SEARCH:[ \t]*(.+?)[ \t]*\|[ \t]*(.+?)[ \t]*\**[ \t]*$", re.I | re.M)
+_ANY_SEARCH_LINE = re.compile(r"^[ \t]*\**[ \t]*SEARCH:.*$\n?", re.I | re.M)
 
 
 def ask_assistant(message: str, history: list[dict], report: dict | None, screen: dict | None = None) -> dict:
     """Returns {"reply": str, "search": {"mechanism", "indication"} | None, "lookups": [tool names]}."""
-    screen = screen or {}
+    screen = dict(screen or {})
+    if not isinstance(screen.get("open_card"), dict):
+        screen["open_card"] = None
+    screen["visible_cards"] = [c for c in screen.get("visible_cards") or [] if isinstance(c, dict)] \
+        if isinstance(screen.get("visible_cards"), list) else []
+    if report is not None and not isinstance(report.get("cards"), list):
+        report = {**report, "cards": []}
+    elif report is not None:
+        report = {**report, "cards": [c for c in report["cards"] if isinstance(c, dict)]}
     history_text = _format_history(history)
     lookups = _plan(message, history_text, report, screen)
     tool_results = _run_tools(lookups)
@@ -402,13 +449,14 @@ def ask_assistant(message: str, history: list[dict], report: dict | None, screen
     raw = ask_assistant_reply(SYSTEM_PROMPT, user_prompt, max_tokens=2000)
 
     search = None
-    m = _SEARCH_LINE.search(raw)
+    m = _SEARCH_LINE.search(raw or "")
     if m:
-        s_mechanism, s_indication = m.group(1).strip(), m.group(2).strip()
+        s_mechanism, s_indication = m.group(1).strip(" *"), m.group(2).strip(" *")
         if s_mechanism and s_indication and "<" not in s_mechanism + s_indication:
             search = {"mechanism": s_mechanism, "indication": s_indication}
-        raw = raw[: m.start()].rstrip()
-    raw = re.sub(r"(?im)^\s*SEARCH:.*$", "", raw).rstrip()  # e.g. a leftover "SEARCH: None"
+    # Remove only the SEARCH line(s) — truncating at the first one dropped the
+    # whole answer when the model put SEARCH first. Also catches "SEARCH: None".
+    raw = _ANY_SEARCH_LINE.sub("", raw or "").strip()
 
     return {
         "reply": raw or "I'm not sure how to answer that — try rephrasing?",

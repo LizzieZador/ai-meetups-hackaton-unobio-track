@@ -47,9 +47,16 @@ def fetch_adverse_events(drug_names: list[str], indication: str = "") -> list[di
     disease_words = {w for w in indication.upper().replace("-", " ").split() if len(w) > 3}
     out = []
     for name in dict.fromkeys(n for n in drug_names if n):
-        search = f'patient.drug.openfda.generic_name:"{name.lower()}"'
-        total = ((_get({"search": search, "limit": 1}) or {}).get("meta") or {}).get("results", {}).get("total")
-        if not total:
+        # The harmonized openfda block is missing for some drugs (zanubrutinib:
+        # 0 reports by generic name, 4,233 by reported active substance).
+        search, total = None, None
+        for field in ("patient.drug.openfda.generic_name", "patient.drug.activesubstance.activesubstancename"):
+            candidate = f'{field}:"{name.lower()}"'
+            total = ((_get({"search": candidate, "limit": 1}) or {}).get("meta") or {}).get("results", {}).get("total")
+            if total:
+                search = candidate
+                break
+        if not search:
             continue
         serious = ((_get({"search": f"{search} AND serious:1", "limit": 1}) or {}).get("meta") or {}).get("results", {}).get("total") or 0
         counted = (_get({"search": search, "count": "patient.reaction.reactionmeddrapt.exact", "limit": 30}) or {}).get("results") or []

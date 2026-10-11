@@ -82,15 +82,26 @@ def static_files(name):
     return send_from_directory(WEB_DIR, name)
 
 
+def _json_body() -> dict:
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else {}
+
+
+def _text(value) -> str:
+    """A request field as text — anything that isn't a string counts as empty
+    (a number or object there used to crash the route into an HTML 500)."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 @app.post("/api/evaluate")
 def evaluate():
-    body = request.get_json(silent=True) or {}
-    query = (body.get("query") or "").strip()
+    body = _json_body()
+    query = _text(body.get("query"))
     if query:
         indication, mechanism = split_query(query)
     else:
-        indication = (body.get("indication") or "").strip()
-        mechanism = (body.get("mechanism") or "").strip()
+        indication = _text(body.get("indication"))
+        mechanism = _text(body.get("mechanism"))
     if not indication or not mechanism:
         return jsonify(error="Both Indication and Mechanism/Target are required."), 400
     try:
@@ -102,12 +113,14 @@ def evaluate():
 
 @app.post("/api/assistant")
 def assistant():
-    body = request.get_json(silent=True) or {}
-    message = (body.get("message") or "").strip()
+    body = _json_body()
+    message = _text(body.get("message"))
     if not message:
         return jsonify(error="Message is required."), 400
-    history = body.get("history") or []
-    report = body.get("report")
+    # Everything below comes from the browser's own state (localStorage) and
+    # is only trusted in shape once checked here.
+    history = body.get("history") if isinstance(body.get("history"), list) else []
+    report = body.get("report") if isinstance(body.get("report"), dict) else None
     screen = body.get("screen") if isinstance(body.get("screen"), dict) else {}
     try:
         return jsonify(ask_assistant(message, history, report, screen))

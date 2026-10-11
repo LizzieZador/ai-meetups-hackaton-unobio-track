@@ -983,8 +983,11 @@ function newChat() {
   $("assistant-input").focus();
 }
 
-function recordChatMessage(message) {
-  let chat = activeChat();
+// Saves a message into chat `chatId` (default: the open chat, created on the
+// first message). A reply always lands in the chat it was asked in, even if
+// the user switched chats while waiting — it used to be dropped entirely.
+function recordChatMessage(message, chatId = activeChatId) {
+  let chat = chats.find((c) => c.id === chatId) || null;
   if (!chat) {
     const first = message.text || "New chat";
     chat = {
@@ -997,7 +1000,10 @@ function recordChatMessage(message) {
     activeChatId = chat.id;
   }
   chat.messages.push(message);
-  chat.history = assistantHistory;
+  if (message.text && !message.search && message.who) {
+    chat.history = [...(chat.history || []), { role: message.who === "You" ? "user" : "assistant", text: message.text }].slice(-12);
+  }
+  if (chat.id === activeChatId) assistantHistory = chat.history;
   chat.at = Date.now();
   chats = [chat, ...chats.filter((c) => c.id !== chat.id)];
   saveChats();
@@ -1010,6 +1016,7 @@ $("assistant-form").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("assistant-input").value.trim();
   if (!text) return;
+  const priorHistory = assistantHistory; // context sent with this question, excluding itself
   appendAssistantMsg("You", text);
   recordChatMessage({ who: "You", text });
   const chatId = activeChatId;
@@ -1021,25 +1028,21 @@ $("assistant-form").onsubmit = async (e) => {
     const res = await fetch("/api/assistant", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, history: assistantHistory, report: current, screen: screenState() }),
+      body: JSON.stringify({ message: text, history: priorHistory, report: current, screen: screenState() }),
     });
     const data = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
     pending.remove();
     if (!res.ok || data.error) throw new Error(data.error || `Server error (${res.status})`);
-    // The user may have switched chats while waiting: only paint the reply
-    // into the log if its own chat is still the one on screen.
+    recordChatMessage({ who: "Assistant", text: data.reply, lookups: data.lookups || [] }, chatId);
+    if (data.search) recordChatMessage({ search: data.search }, chatId);
+    // Painted only if that chat is still the one on screen.
     if (activeChatId === chatId) {
       appendAssistantMsg("Assistant", data.reply, null, data.lookups);
-      assistantHistory = [...assistantHistory, { role: "user", text }, { role: "assistant", text: data.reply }].slice(-12);
-      recordChatMessage({ who: "Assistant", text: data.reply, lookups: data.lookups || [] });
-      if (data.search) {
-        appendAssistantSearch(data.search);
-        recordChatMessage({ search: data.search });
-      }
+      if (data.search) appendAssistantSearch(data.search);
     }
   } catch (err) {
     pending.remove();
-    appendAssistantMsg("Assistant", err.message, "note");
+    if (activeChatId === chatId) appendAssistantMsg("Assistant", err.message, "note");
   } finally {
     updateAssistantSendEnabled();
   }

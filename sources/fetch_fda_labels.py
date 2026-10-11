@@ -25,7 +25,16 @@ def _clean(text: str, limit: int) -> str:
 
 
 def _query(name: str) -> list[dict] | None:
-    params = {"search": f'openfda.generic_name:"{name.lower()}"', "limit": 10}
+    """By harmonized generic name, else by the label's own product text —
+    some labels lack the openfda block entirely (zanubrutinib / Brukinsa)."""
+    results = _query_field("openfda.generic_name", name)
+    if results == []:
+        results = _query_field("spl_product_data_elements", name)
+    return results
+
+
+def _query_field(field: str, name: str) -> list[dict] | None:
+    params = {"search": f'{field}:"{name.lower()}"', "limit": 10}
     path = CACHE_DIR / f"fda_label_{hashlib.sha256(json.dumps(params).encode()).hexdigest()[:24]}.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -57,6 +66,9 @@ def fetch_drug_labels(drug_names: list[str]) -> list[dict]:
         boxed = _clean((label.get("boxed_warning") or [""])[0], 300) or None
         set_id = label.get("set_id")
         brand = ", ".join(((label.get("openfda") or {}).get("brand_name") or [])[:2])
+        if not brand:  # no openfda block: the product text starts with the brand
+            first = ((label.get("spl_product_data_elements") or [""])[0].split() or [""])[0]
+            brand = first if first.isupper() and first.lower() != name.lower() else ""
         out.append({
             "drug_name": name,
             "brand": brand or None,
