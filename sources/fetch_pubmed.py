@@ -74,18 +74,20 @@ def fetch_pubmed(
     if not query or not query.strip():
         return []
 
-    cache_key = f"{query.strip()}__{max_results}__{cutoff_date or 'none'}"
+    cache_key = f"{query.strip()}__{max_results}__{cutoff_date or 'none'}__peer-reviewed"
     digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
     slug_part = _slug(query)[:50]
     cache_path = CACHE_DIR / f"pubmed_{slug_part}_{digest}.json"
 
     if cache_path.exists():
         try:
-            return json.loads(cache_path.read_text(encoding="utf-8"))
+            return [r for r in json.loads(cache_path.read_text(encoding="utf-8")) if _trustworthy(r)]
         except (OSError, ValueError):
             pass
 
     records = _fetch(query.strip(), max_results, cutoff_date)
+    if records is not None:
+        records = [r for r in records if _trustworthy(r)]
     if records is not None:
         try:
             cache_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -93,6 +95,19 @@ def fetch_pubmed(
             pass
 
     return records
+
+
+# Not peer-reviewed findings: retracted papers, the retraction notices
+# themselves, expressions of concern, errata and unreviewed preprints.
+_UNRELIABLE_TYPES = {
+    "Retracted Publication", "Retraction of Publication", "Expression of Concern",
+    "Published Erratum", "Preprint",
+}
+_EXCLUDE_TERM = " NOT (" + " OR ".join(f'"{t.lower()}"[pt]' for t in sorted(_UNRELIABLE_TYPES)) + ")"
+
+
+def _trustworthy(record: dict) -> bool:
+    return not (set(record.get("publication_types") or []) & _UNRELIABLE_TYPES)
 
 
 def _fetch(query: str, max_results: int, cutoff_date: Optional[str]) -> Optional[list[dict]]:
@@ -103,7 +118,7 @@ def _fetch(query: str, max_results: int, cutoff_date: Optional[str]) -> Optional
 
     search_params = {
         "db": "pubmed",
-        "term": query,
+        "term": f"({query}){_EXCLUDE_TERM}",
         "retmax": max_results,
         "retmode": "json",
         "sort": "pub_date",

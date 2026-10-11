@@ -45,9 +45,9 @@ CARDS: list[dict] = [
     {
         "id": "patient_population",
         "title": "Patient population, TAM & financials",
-        "subtitle": "Epidemiology, treatment patterns, market research, rNPV model and capital to next milestone",
+        "subtitle": "Medicare spending (CMS), epidemiology, market research, rNPV model and capital to next milestone",
         "claim_sections": ["commercial_opportunity", "capital_required"],
-        "raw_sources": ["commercial"],
+        "raw_sources": ["commercial", "medicare_spending"],
         "data_gap_note": "Not available — underlying epidemiology data (market_data.csv) has not yet been verified by the team.",
     },
     {
@@ -55,7 +55,7 @@ CARDS: list[dict] = [
         "title": "Existing competitive landscape",
         "subtitle": "Approved products and late-stage pipeline",
         "claim_sections": ["competitive_landscape"],
-        "raw_sources": ["opentargets", "aact", "regulatory", "drug_profiles"],
+        "raw_sources": ["opentargets", "aact", "regulatory", "drug_profiles", "fda_labels"],
         "include_analogs": True,
     },
     {
@@ -63,14 +63,14 @@ CARDS: list[dict] = [
         "title": "Pipeline & drugs in development",
         "subtitle": "Industry pipeline, clinicaltrials.gov, company disclosures",
         "claim_sections": [],
-        "raw_sources": ["clinicaltrials", "opentargets", "regulatory"],
+        "raw_sources": ["clinicaltrials", "opentargets", "regulatory", "ema"],
     },
     {
         "id": "patent_ip",
         "title": "Patent & IP review",
-        "subtitle": "FDA Orange Book patents & exclusivities, Lens.org filings; litigation and freedom-to-operate not covered",
+        "subtitle": "FDA Orange Book (small molecules) & Purple Book (biologics) exclusivity, Lens.org filings; litigation and freedom-to-operate not covered",
         "claim_sections": [],
-        "raw_sources": ["patents", "regulatory", "orange_book"],
+        "raw_sources": ["patents", "regulatory", "orange_book", "purple_book"],
     },
     {
         "id": "trial_design",
@@ -82,16 +82,16 @@ CARDS: list[dict] = [
     {
         "id": "risk_diligence",
         "title": "Risk & regulatory diligence",
-        "subtitle": "Recommendation, precaution, regulatory advantage and open diligence questions",
+        "subtitle": "Red flags, safety signals (FDA labels, FAERS), regulatory advantage and open diligence questions",
         "claim_sections": ["key_risks", "critical_unknowns", "diligence_questions"],
-        "raw_sources": ["regulatory"],
+        "raw_sources": ["regulatory", "fda_labels", "adverse_events"],
     },
     {
         "id": "regulatory_timeline",
         "title": "Regulatory timeline",
         "subtitle": "Trial registries, FDA approval records — stage reached per drug",
         "claim_sections": [],
-        "raw_sources": ["aact", "regulatory", "clinicaltrials"],
+        "raw_sources": ["aact", "regulatory", "clinicaltrials", "ema"],
         "include_analogs": True,
     },
 ]

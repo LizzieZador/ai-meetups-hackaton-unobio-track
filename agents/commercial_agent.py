@@ -152,35 +152,34 @@ def _extract_market_assumptions_from_raw(
                 if k in REQUIRED_PARAMETERS and isinstance(v, dict):
                     assumptions[k] = v
 
-    # Fallback / ground from local dataset if LLM omitted specific parameters
+    # Fallback from the manual dataset if the LLM omitted a parameter — verified
+    # rows only: an unverified hand-entered figure must never feed the rNPV.
     if "prevalence_or_incidence" not in assumptions:
         epi = get_epidemiology(indication, cutoff_date=cutoff_date)
-        if epi:
+        if epi and epi.get("is_evidence"):
             try:
                 inc_val = float(str(epi.get("incidence", "")).replace(",", "").strip())
-                basis_tag = "evidence:S1" if epi.get("is_evidence") else "inference"
                 assumptions["prevalence_or_incidence"] = {
                     "low": round(inc_val * 0.8),
                     "base": round(inc_val),
                     "high": round(inc_val * 1.2),
-                    "basis": basis_tag,
-                    "note": f"Grounded in manual epidemiology dataset for {indication}",
+                    "basis": "evidence:S1",
+                    "note": f"Grounded in verified epidemiology data for {indication}",
                 }
             except (ValueError, TypeError):
                 pass
 
     if "annual_price" not in assumptions:
         pricing = get_pricing_analogues(indication, cutoff_date=cutoff_date)
-        if pricing:
+        if pricing and pricing.get("is_evidence"):
             try:
                 price_val = float(str(pricing.get("annual_cost_usd", "")).replace(",", "").strip())
-                basis_tag = "evidence:S1" if pricing.get("is_evidence") else "inference"
                 assumptions["annual_price"] = {
                     "low": round(price_val * 0.8),
                     "base": round(price_val),
                     "high": round(price_val * 1.2),
-                    "basis": basis_tag,
-                    "note": f"Grounded in pricing analogue dataset ({pricing.get('drug_name')})",
+                    "basis": "evidence:S1",
+                    "note": f"Grounded in verified pricing data ({pricing.get('drug_name')})",
                 }
             except (ValueError, TypeError):
                 pass

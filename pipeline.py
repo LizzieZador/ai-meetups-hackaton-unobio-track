@@ -35,7 +35,12 @@ from raw_data import collect_valid_sources, extract_analogs
 from schema import Claim, get_dropped_claims_log, reset_dropped_claims_log, log_dropped_claim
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_commercial import collect_commercial_sources
+from sources.fetch_cms_spending import fetch_medicare_spending
 from sources.fetch_drug_profiles import fetch_competitor_profiles
+from sources.fetch_ema import fetch_eu_approvals
+from sources.fetch_faers import fetch_adverse_events
+from sources.fetch_fda_labels import fetch_drug_labels
+from sources.fetch_purple_book import fetch_biologic_exclusivity
 from sources.fetch_lens import fetch_patent_signals
 from sources.fetch_opentargets import _resolve_entity
 from sources.fetch_orange_book import fetch_orange_book_patents
@@ -120,11 +125,13 @@ def collect_sources(
     # pushed FDA-approved ones past a 5-name cut. openFDA is keyless and cached.
     regulatory_records = fetch_regulatory_signals(query_terms[:10]) if query_terms else []
 
-    # Drug profiles and the Orange Book are present-day snapshots with no
-    # historical view, so a backtest (cutoff_date set) skips them rather than
-    # leaking later approvals/competitors into a past-dated evaluation.
+    # Drug profiles, Orange/Purple Book, labels, FAERS, Medicare spending and
+    # EMA are present-day snapshots with no historical view, so a backtest
+    # (cutoff_date set) skips them rather than leaking later approvals,
+    # competitors or safety signals into a past-dated evaluation.
     drug_profiles: list[dict] = []
     orange_book: list[dict] = []
+    present_day: dict[str, list[dict]] = {k: [] for k in ("fda_labels", "adverse_events", "purple_book", "medicare_spending", "ema")}
     if not cutoff_date:
         try:
             target_symbol = (_resolve_entity(mechanism, "target") or {}).get("name") or ""
@@ -135,6 +142,20 @@ def collect_sources(
             orange_book = fetch_orange_book_patents(regulatory_records)
         except Exception as e:
             print(f"[Pipeline Warning] Orange Book lookup failed: {e}")
+        # Labels, safety, biologic exclusivity, Medicare spending and EU status
+        # for the same furthest-along competitors openFDA was queried for.
+        names = query_terms[:10] if analog_names else []
+        for key, fetch in (
+            ("fda_labels", fetch_drug_labels),
+            ("adverse_events", lambda n: fetch_adverse_events(n, indication)),
+            ("purple_book", fetch_biologic_exclusivity),
+            ("medicare_spending", fetch_medicare_spending),
+            ("ema", fetch_eu_approvals),
+        ):
+            try:
+                present_day[key] = fetch(names) if names else []
+            except Exception as e:
+                print(f"[Pipeline Warning] {key} lookup failed: {e}")
 
     return {
         "pubmed": pubmed_records,
@@ -147,6 +168,7 @@ def collect_sources(
         "patents": fetch_patent_signals(query_terms[:3], max_per_term=5) if query_terms else [],
         "drug_profiles": drug_profiles,
         "orange_book": orange_book,
+        **present_day,
     }
 
 

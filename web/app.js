@@ -862,6 +862,11 @@ const LOOKUP_LABELS = {
   drug_profile: "Open Targets drug profile",
   fda_approvals: "FDA approvals",
   us_patents_exclusivity: "Orange Book",
+  drug_safety: "FAERS & FDA labels",
+  drug_labels: "FDA labels",
+  eu_approvals: "EMA",
+  medicare_spending: "CMS Medicare spending",
+  biologic_exclusivity: "Purple Book",
   company_filings: "SEC EDGAR",
   worldwide_patents: "Lens.org",
 };

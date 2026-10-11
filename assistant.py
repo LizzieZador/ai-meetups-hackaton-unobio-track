@@ -19,10 +19,18 @@ Flow per message:
 import json
 import re
 
+import requests
+
 from cards import CARDS
 from llm import ask_assistant_reply
+from raw_data import _base_name
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
+from sources.fetch_cms_spending import fetch_medicare_spending
 from sources.fetch_drug_profiles import fetch_drug_profile
+from sources.fetch_ema import fetch_eu_approvals
+from sources.fetch_faers import fetch_adverse_events
+from sources.fetch_fda_labels import fetch_drug_labels
+from sources.fetch_purple_book import fetch_biologic_exclusivity
 from sources.fetch_indication_drugs import fetch_indication_drugs
 from sources.fetch_lens import fetch_patent_signals
 from sources.fetch_opentargets import fetch_opentargets
@@ -50,9 +58,55 @@ def _records(records: list[dict] | None) -> str:
     return "\n".join(f"- {r.get('raw_snippet', '')} [{r.get('source', '')}]({r.get('url', '')})" for r in rows) or "no results"
 
 
+_generic_cache: dict[str, str] = {}
+
+
+def _to_generic(name: str) -> str:
+    """Brand -> generic (INN): every drug source is keyed by generic name, so
+    "Ocrevus" found nothing in CMS while "ocrelizumab" has $669M. A name that
+    isn't a known US brand is returned unchanged (it's likely generic already)."""
+    key = name.strip().lower()
+    if key not in _generic_cache:
+        generic = _fda_brand_generic(key) or _ema_brand_generic(key) or name.strip()
+        # "FINGOLIMOD HYDROCHLORIDE" -> "fingolimod": sources search the moiety.
+        _generic_cache[key] = _base_name(generic) or generic
+    return _generic_cache[key]
+
+
+def _fda_brand_generic(brand: str) -> str | None:
+    """The single active ingredient of the product sold under exactly this US
+    brand. Exact brand only ("Keytruda", not "Keytruda Qlex", a combination),
+    read from the products themselves — some applications lack the harmonized
+    openfda block entirely (Brukinsa)."""
+    try:
+        resp = requests.get(
+            "https://api.fda.gov/drug/drugsfda.json",
+            params={"search": f'products.brand_name:"{brand}"', "limit": 10},
+            timeout=10,
+        )
+        results = resp.json().get("results") or [] if resp.status_code == 200 else []
+    except (requests.RequestException, ValueError):
+        return None
+    for app in results:
+        for p in app.get("products") or []:
+            ingredients = p.get("active_ingredients") or []
+            if (p.get("brand_name") or "").lower() == brand and len(ingredients) == 1:
+                return ingredients[0].get("name")
+    return None
+
+
+def _ema_brand_generic(brand: str) -> str | None:
+    """EU-only brands (e.g. Cenrifki = tolebrutinib) from the EMA table."""
+    from sources.fetch_ema import _load
+
+    hit = next((m for m in _load() if (m.get("name_of_medicine") or "").lower() == brand), None)
+    return (hit or {}).get("international_non_proprietary_name_common_name") or None
+
+
 def _names(args: dict, key: str) -> list[str]:
     value = args.get(key) or []
-    return [value] if isinstance(value, str) else [str(v) for v in value][:5]
+    names = [value] if isinstance(value, str) else [str(v) for v in value][:5]
+    return [_to_generic(n) for n in names] if key == "drugs" else names
 
 
 def _tool_drugs(args: dict) -> str:
@@ -113,6 +167,23 @@ def _tool_profile(args: dict) -> str:
             f"https://platform.opentargets.org/drug/{p['chembl_id']}")
 
 
+def _tool_safety(args: dict) -> str:
+    names = _names(args, "drugs")
+    labels = {l["drug_name"].lower(): l for l in fetch_drug_labels(names)}
+    lines = []
+    for ae in fetch_adverse_events(names, args.get("indication") or ""):
+        boxed = (labels.get(ae["drug_name"].lower()) or {}).get("boxed_warning")
+        lines.append(f"- {ae['raw_snippet']} Boxed warning: {boxed or 'none on US label'} | {ae['url']}")
+    return "\n".join(lines) or "no FAERS reports or US labels found"
+
+
+def _tool_labels(args: dict) -> str:
+    return "\n".join(
+        f"- {l['drug_name']} ({l.get('brand')}) | US indication: {l.get('indication')} | boxed warning: {l.get('boxed_warning') or 'none'} | {l['url']}"
+        for l in fetch_drug_labels(_names(args, "drugs"))
+    ) or "no US labels found"
+
+
 TOOLS = {
     "drugs_for_indication": (
         "indication (English disease name), optional mechanism — drugs with clinical evidence for that "
@@ -131,6 +202,19 @@ TOOLS = {
     "drug_profile": ("drug — Open Targets profile: targets, modality, max stage", _tool_profile),
     "fda_approvals": ("drugs (list) — US approval date, brand, sponsor, designations (openFDA + Orange Book)", _tool_fda),
     "us_patents_exclusivity": ("drugs (list) — FDA Orange Book patents and exclusivity expiry dates", _tool_patents),
+    "drug_safety": (
+        "drugs (list), optional indication — FAERS adverse-event reports (total, serious, top reactions) "
+        "and the US label's boxed warning",
+        _tool_safety,
+    ),
+    "drug_labels": ("drugs (list) — official US label: approved indications and boxed warning", _tool_labels),
+    "eu_approvals": ("drugs (list) — EMA EU authorisation: status, date, indication, conditional/orphan/PRIME", lambda a: _records(fetch_eu_approvals(_names(a, "drugs")))),
+    "medicare_spending": (
+        "drugs (list) — CMS Medicare Part D/B spending, claims and beneficiaries per year (real US spending; "
+        "Medicare only, not total sales)",
+        lambda a: _records(fetch_medicare_spending(_names(a, "drugs"))),
+    ),
+    "biologic_exclusivity": ("drugs (list) — FDA Purple Book: biologic licensure and exclusivity dates", lambda a: _records(fetch_biologic_exclusivity(_names(a, "drugs")))),
     "company_filings": ("terms (list) — SEC EDGAR 8-K filings mentioning them", lambda a: _records(fetch_press_releases(_names(a, "terms"), max_per_term=3))),
     "worldwide_patents": ("terms (list) — Lens.org patent filings worldwide", lambda a: _records(fetch_patent_signals(_names(a, "terms"), max_per_term=3))),
 }
@@ -151,7 +235,8 @@ recommendations, approvals, patents, trials, literature, filings.
 - "This card", "here", "these drugs" refer to SCREEN.open_card or SCREEN.visible_cards.
 - Disease names in English (translate: "розсіяний склероз" -> "multiple sclerosis"). If the user \
 names no disease but means the loaded one, use REPORT_SUMMARY's indication.
-- At most 3 lookups, only from TOOLS, with the exact argument names shown.
+- At most 3 lookups, only from TOOLS, with the exact argument names shown. Pass drugs by generic \
+(INN) name when you know it from the blocks (e.g. "ocrelizumab", not "Ocrevus").
 Return ONLY JSON: {"lookups": [{"tool": "<name>", "args": {...}}]} — an empty list when none are needed.
 
 TOOLS:
@@ -241,7 +326,8 @@ def _format_report_context(report: dict | None, screen: dict) -> str:
 
 SYSTEM_PROMPT = f"""You are the Assistant on a biotech "Investment Committee" web tool. The site \
 takes a Mechanism/Target + Indication, queries our databases (PubMed, Open Targets, \
-ClinicalTrials.gov, AACT, openFDA, FDA Orange Book, SEC EDGAR, Lens.org, a market-data CSV) and \
+ClinicalTrials.gov, AACT, openFDA approvals/labels/FAERS, FDA Orange Book & Purple Book, EMA, CMS \
+Medicare spending, SEC EDGAR, Lens.org, a market-data CSV) and \
 shows a verdict (Invest / Conditional / Do Not Invest) plus these cards:
 
 {SITE_STRUCTURE}
@@ -270,7 +356,8 @@ FORMAT — structured, zero filler:
 Then only the sections that apply, each a few "- " lines of facts:
 **Evidence** · **Candidates** (ranked: name — stage, mechanism, approval, trials) · **Why** · **Next**
 End every fact line with a short source tag: [Card 5] / [Report] only for facts taken from \
-REPORT_CONTEXT; [Open Targets], [FDA], [Orange Book], [CT.gov NCTxxxx], [PubMed], [SEC], [Lens] for \
+REPORT_CONTEXT; [Open Targets], [FDA], [FDA label], [FAERS], [Orange Book], [Purple Book], [EMA], \
+[CMS], [CT.gov NCTxxxx], [PubMed], [SEC], [Lens] for \
 facts from TOOL_RESULTS.
 Reply in the language the user wrote in (Ukrainian question -> Ukrainian answer, section labels too). \
 No greetings, no restating the question, no generic caveats. At most ~10 lines.
@@ -281,10 +368,11 @@ e.g. "SEARCH: BTK inhibitor | Multiple Sclerosis". Omit it otherwise.
 
 LIMITATIONS (state them accurately if asked): you see structured screen state, not pixels; one \
 round of at most {MAX_TOOLS} lookups per message; you don't run the full committee evaluation \
-yourself (it takes ~2 min — you propose it via SEARCH); Open Targets curation has gaps; FDA data is \
-US-only and the Orange Book lists only approved small molecules (no biologics); trial and \
-literature lookups return top results, not exhaustive lists; SEC data is filing metadata, not \
-sentiment; no paid sources (sales, analyst consensus); market CSV figures are unverified; chat \
+yourself (it takes ~2 min — you propose it via SEARCH); Open Targets curation has gaps; regulatory \
+data covers the US (FDA) and EU (EMA) only; FAERS counts are spontaneous reports, not incidence or \
+causation; CMS figures are Medicare spending only, not total sales; trial and literature lookups \
+return top results, not exhaustive lists; SEC data is filing metadata, not sentiment; no paid \
+sources (global sales, analyst consensus); market CSV figures are unverified; chat \
 memory is the last {MAX_HISTORY_TURNS} exchanges of the open chat."""
 
 

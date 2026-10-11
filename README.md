@@ -50,14 +50,20 @@ collect_sources() -> scientific_agent -> clinical_agent -> commercial_agent
 | ClinicalTrials.gov | дослідження, фази, статуси, препарати-інтервенції |
 | AACT | агрегована база ClinicalTrials.gov (Postgres або flat-файли в `data/aact/`) |
 | openFDA Drugs@FDA | схвалення, спонсори, designations (Orphan, Priority Review) |
-| FDA Orange Book | патенти США з датами закінчення та регуляторні ексклюзивності |
+| openFDA Drug Labels | офіційні показання з етикетки США та boxed warnings |
+| openFDA FAERS | звіти про побічні ефекти (кількість, серйозні, найчастіші реакції) |
+| FDA Orange Book | патенти США з датами закінчення та ексклюзивності малих молекул; дати перших схвалень |
+| FDA Purple Book | ліцензії та ексклюзивність біологічних препаратів |
+| EMA | схвалення в ЄС: статус, дата, показання, conditional / orphan / PRIME |
+| CMS Medicare Spending | реальні витрати Medicare Part D / Part B на препарат за рік |
 | Lens.org | патентні заявки по світу (потрібен `LENS_API_TOKEN`) |
 | SEC EDGAR | 8-K filings компаній (активність, не sentiment) |
 | `data/market_data.csv` | епідеміологія та ціни (ручні, позначені як неверифіковані) |
 
 Будь-яке недоступне джерело просто пропускається — пайплайн продовжує роботу.
 Для бектестів (`run_pipeline(..., cutoff_date=...)`) знімки «на сьогодні»
-(профілі препаратів, Orange Book) вимикаються, щоб не підглядати в майбутнє.
+(профілі препаратів, Orange/Purple Book, етикетки, FAERS, CMS, EMA) вимикаються,
+щоб не підглядати в майбутнє.
 
 ## Структура
 

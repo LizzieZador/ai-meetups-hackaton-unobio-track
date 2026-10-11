@@ -48,6 +48,20 @@ def _format_fda_date(raw: str | None) -> str | None:
     return raw
 
 
+def _ema_by_name(sources: dict) -> dict[str, dict]:
+    return {(e.get("drug_name") or "").strip().lower(): e for e in sources.get("ema", [])}
+
+
+def _ema_status(eu: dict | None):
+    """'Authorised 2022-01-06 (conditional)', linked to the EPAR."""
+    if not eu:
+        return NA
+    text = f"{eu.get('status') or 'Listed'} {eu.get('authorised') or ''}".strip()
+    if eu.get("flags"):
+        text += f" ({', '.join(eu['flags'])})"
+    return _cell(text, eu.get("url"))
+
+
 def _orange_book_by_appl(sources: dict) -> dict[str, dict]:
     return {(r.get("application_number") or ""): r for r in sources.get("orange_book", [])}
 
@@ -409,7 +423,39 @@ def build_patient_population_view(claims_by_section: dict, sources: dict, analog
         for c in claims_by_section.get("capital_required", [])
     ]
 
-    return {"view": "list", "items": non_inference + inference + financial_items}
+    items = non_inference + inference + financial_items
+    spending = sources.get("medicare_spending", [])
+    if not spending:
+        return {"view": "list", "items": items}
+
+    # Real US spending on approved competitors (CMS), the one verified market
+    # number we have — shown above the modelled/claimed figures.
+    def money(v):
+        return f"${v / 1e6:,.1f}M" if v is not None else NA
+
+    rows = [
+        {
+            "Drug": _cell(f"{(s.get('brand') or s['drug_name']).title()} ({s['drug_name'].lower()})", s.get("url")),
+            "Medicare Part": s["part"],
+            "Year": s["year"],
+            "Spending": money(s.get("spending_usd")),
+            "vs Prior Year": f"{s['growth_pct']:+.0f}%" if s.get("growth_pct") is not None else NA,
+            "Claims": f"{s['claims']:,}",
+            "Beneficiaries": f"{s['beneficiaries']:,}",
+        }
+        for s in sorted(spending, key=lambda s: -(s.get("spending_usd") or 0))
+    ]
+    return {
+        "view": "composite",
+        "sections": [
+            {
+                "kind": "table", "title": "Medicare Spending on Approved Competitors — CMS",
+                "columns": ["Drug", "Medicare Part", "Year", "Spending", "vs Prior Year", "Claims", "Beneficiaries"],
+                "rows": rows,
+            },
+            {"kind": "list", "title": "Evidence & Financials", "items": items},
+        ],
+    }
 
 
 _UNCURATED = "Not curated in Open Targets"
@@ -454,10 +500,12 @@ def build_competitive_landscape_view(claims_by_section: dict, sources: dict, ana
         if r.get("drug_name")
     }
     orange_book = _orange_book_by_appl(sources)
+    labels = {(l.get("drug_name") or "").strip().lower(): l for l in sources.get("fda_labels", [])}
     rows = []
     for d in analogs:
         name = d.get("name") or NA
         reg = reg_by_name.get((d.get("name") or "").strip().lower())
+        label = labels.get((d.get("name") or "").strip().lower())
         if reg and reg.get("url"):
             source_cell = _cell("openFDA Drugs@FDA", reg["url"])
         elif d.get("profile_url"):
@@ -471,11 +519,14 @@ def build_competitive_landscape_view(claims_by_section: dict, sources: dict, ana
             "Modality": d.get("drug_type") or NA,
             "Lead Sponsor": _sponsor_display(reg, orange_book),
             "MoA": _analog_moa(d),
+            # The approved use, verbatim from the current US label.
+            "US Label Indication": _cell(_short(label["indication"], 160), label.get("url"))
+            if label and label.get("indication") else NA,
             "Source": source_cell,
         })
     return {
         "view": "table",
-        "columns": ["Drug", "Clinical Stage", "Target", "Modality", "Lead Sponsor", "MoA", "Source"],
+        "columns": ["Drug", "Clinical Stage", "Target", "Modality", "Lead Sponsor", "MoA", "US Label Indication", "Source"],
         "rows": rows,
         "show_claims_below": True,
     }
@@ -501,22 +552,25 @@ def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[di
         if r.get("drug_name")
     }
     orange_book = _orange_book_by_appl(sources)
+    ema = _ema_by_name(sources)
     drug_rows = []
     for d in analogs:
         name = d.get("name") or ""
         reg = reg_by_name.get(name.strip().lower())
+        eu = ema.get(name.strip().lower())
         first_approval = _format_fda_date(reg.get("first_approval_date") if reg else None)
         link = (reg or {}).get("url") or d.get("profile_url")
         drug_rows.append({
             "Drug": _cell(name, link) if link else (name or NA),
             "Clinical Stage": d.get("stage") or NA,
             "MoA": _analog_moa(d),
-            "Status": (
+            "US Status": (
                 f"Approved ({first_approval})" if first_approval
                 # Open Targets says approved but openFDA has no US record: an ex-US approval
-                else "Approved outside US (no FDA record)" if (d.get("stage") or "").upper() == "APPROVAL"
+                else "No FDA record (approved elsewhere)" if (d.get("stage") or "").upper() == "APPROVAL"
                 else NA
             ),
+            "EU Status (EMA)": _ema_status(eu),
             "Sponsor": _sponsor_display(reg, orange_book),
         })
 
@@ -534,7 +588,7 @@ def build_pipeline_view(claims_by_section: dict, sources: dict, analogs: list[di
         "sections": [
             {
                 "kind": "table", "title": "Drug",
-                "columns": ["Drug", "Clinical Stage", "MoA", "Status", "Sponsor"],
+                "columns": ["Drug", "Clinical Stage", "MoA", "US Status", "EU Status (EMA)", "Sponsor"],
                 "rows": drug_rows,
             },
             {"kind": "table", "title": "Trial", "columns": ["NCT ID", "Trial", "Status", "Sponsor"], "rows": trial_rows},
@@ -660,6 +714,29 @@ def build_patent_ip_view(claims_by_section: dict, sources: dict, analogs: list[d
                 "kind": "table", "title": "Regulatory Exclusivity — FDA Orange Book",
                 "columns": ["Drug", "Exclusivity", "What It Means", "Expires", "Status"],
                 "rows": exclusivity_rows,
+            },
+            {
+                # Biologics aren't in the Orange Book at all; their exclusivity
+                # lives in the Purple Book (12-year reference-product, orphan).
+                "kind": "table", "title": "Biologic Exclusivity — FDA Purple Book",
+                "columns": ["Drug", "BLA", "First Licensed", "Reference-Product Exclusivity", "Orphan Exclusivity", "Holder"],
+                "rows": [
+                    {
+                        "Drug": f"{(b.get('brand') or '').strip()} ({b['drug_name'].lower()})",
+                        "BLA": _cell(b.get("bla"), b.get("url")),
+                        "First Licensed": b.get("first_licensure") or NA,
+                        "Reference-Product Exclusivity": (
+                            f"{b['reference_exclusivity']} — {_term_status(b['reference_exclusivity'])}"
+                            if b.get("reference_exclusivity") else "Not listed"
+                        ),
+                        "Orphan Exclusivity": (
+                            f"{b['orphan_exclusivity']} — {_term_status(b['orphan_exclusivity'])}"
+                            if b.get("orphan_exclusivity") else "Not listed"
+                        ),
+                        "Holder": b.get("applicant") or NA,
+                    }
+                    for b in sources.get("purple_book", [])
+                ],
             },
             {
                 "kind": "table", "title": "Patent Filings — Lens.org",
@@ -824,6 +901,33 @@ def build_risk_diligence_view(claims_by_section: dict, sources: dict, analogs: l
     red_flag_items = [{"kind": "claim", **c.to_dict()} for c in key_risks + critical_unknowns]
     diligence_items = [{"kind": "claim", **c.to_dict()} for c in diligence]
 
+    # Class safety signals on same-mechanism drugs: the US label's boxed
+    # warning and FAERS post-marketing reports (counts are spontaneous
+    # reports, not incidence — the column header says so).
+    labels = {(l.get("drug_name") or "").lower(): l for l in sources.get("fda_labels", [])}
+    safety_rows = []
+    for ae in sources.get("adverse_events", []):
+        label = labels.pop(ae["drug_name"].lower(), None)
+        safety_rows.append({
+            "Drug": ae["drug_name"].title(),
+            "Boxed Warning (US label)": _cell(_short(label["boxed_warning"], 140), label.get("url")) if label and label.get("boxed_warning")
+            else ("None" if label else NA),
+            "FAERS Reports (serious)": _cell(f"{ae['reports']:,} ({ae['serious_reports']:,})", ae.get("url")),
+            "Most Reported Reactions": ", ".join(f"{t} ({c:,})" for t, c in ae.get("top_reactions") or []) or NA,
+        })
+    for label in labels.values():  # labelled drugs with no FAERS reports yet
+        safety_rows.append({
+            "Drug": label["drug_name"].title(),
+            "Boxed Warning (US label)": _cell(_short(label["boxed_warning"], 140), label.get("url")) if label.get("boxed_warning") else "None",
+            "FAERS Reports (serious)": NA,
+            "Most Reported Reactions": NA,
+        })
+    safety_section = [{
+        "kind": "table", "title": "Safety Signals — FDA Labels & FAERS (spontaneous reports, not incidence)",
+        "columns": ["Drug", "Boxed Warning (US label)", "FAERS Reports (serious)", "Most Reported Reactions"],
+        "rows": safety_rows,
+    }] if safety_rows else []
+
     # Order matters here: the headline summary (naming the top red flag and
     # top green flag) comes first, then the full groups — Red Flags / Green
     # Flags / Diligence Questions — in order of how decision-relevant they
@@ -833,6 +937,7 @@ def build_risk_diligence_view(claims_by_section: dict, sources: dict, analogs: l
         "sections": [
             {"kind": "text", "title": "Summary", "text": _risk_summary_text(key_risks, green_rows)},
             {"kind": "list", "title": "Red Flags", "items": red_flag_items},
+            *safety_section,
             {
                 "kind": "table", "title": "Green Flags",
                 "columns": ["Drug", "Designation", "What It Means", "Sponsor", "First Approval"],
@@ -884,6 +989,7 @@ def build_regulatory_timeline_view(claims_by_section: dict, sources: dict, analo
         for r in sources.get("regulatory", [])
         if r.get("drug_name")
     }
+    ema = _ema_by_name(sources)
 
     # Fallback: highest phase rank observed per drug name from CT.gov records
     # whose briefTitle mentions that drug — the only link available between a
@@ -909,7 +1015,11 @@ def build_regulatory_timeline_view(claims_by_section: dict, sources: dict, analo
             continue
         seen_names.add(key)
 
-        approved = key in reg_by_name and bool(reg_by_name[key].get("first_approval_date"))
+        # US approval (openFDA) or an EU marketing authorisation (EMA) both count.
+        eu = ema.get(key)
+        approved = (key in reg_by_name and bool(reg_by_name[key].get("first_approval_date"))) or bool(
+            eu and eu.get("status") == "Authorised"
+        )
         reached = max(
             len(_STAGES) - 1 if approved else -1,
             _opentargets_stage_rank(d.get("stage")),

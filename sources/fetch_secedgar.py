@@ -45,18 +45,21 @@ def fetch_press_releases(terms: list[str], max_per_term: int = 5, forms: str = "
         if not term:
             continue
 
-        hits = _search_cached(term, max_per_term, forms)
-        for hit in hits:
+        kept = 0
+        for hit in _search_cached(term, forms):  # cap after the biopharma filter, not before
+            if kept >= max_per_term:
+                break
             record = _build_record(term, hit, today)
             if record and record["_hit_id"] not in seen_ids:
                 seen_ids.add(record["_hit_id"])
                 record.pop("_hit_id")
                 results.append(record)
+                kept += 1
 
     return results
 
 
-def _search_cached(term: str, limit: int, forms: str) -> list[dict]:
+def _search_cached(term: str, forms: str) -> list[dict]:
     params = {"q": f'"{term}"', "forms": forms}
     param_hash = hashlib.sha256(json.dumps(params, sort_keys=True).encode("utf-8")).hexdigest()
     cache_path = CACHE_DIR / f"sec_edgar_{param_hash}.json"
@@ -69,7 +72,7 @@ def _search_cached(term: str, limit: int, forms: str) -> list[dict]:
             return []
         cache_path.write_text(json.dumps(hits, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return hits[:limit]
+    return hits
 
 
 def _fetch(params: dict) -> Optional[list[dict]]:
@@ -81,10 +84,19 @@ def _fetch(params: dict) -> Optional[list[dict]]:
         return None
 
 
+# SEC industry (SIC) codes of drug developers: medicinal chemicals, pharmaceutical
+# preparations, diagnostics, biological products, R&D labs, drug wholesale.
+# Full-text search also hits unrelated filers that merely mention a drug name —
+# e.g. a mining shell company (SIC 1000) naming salirasib — which are noise.
+_BIOPHARMA_SICS = {"2833", "2834", "2835", "2836", "8731", "8733", "5122"}
+
+
 def _build_record(term: str, hit: dict, today: str) -> Optional[dict]:
     src = hit.get("_source", {})
     hit_id = hit.get("_id", "")
     if ":" not in hit_id:
+        return None
+    if not set(src.get("sics") or []) & _BIOPHARMA_SICS:
         return None
     accession, filename = hit_id.split(":", 1)
 
