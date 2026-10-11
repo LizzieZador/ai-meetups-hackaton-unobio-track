@@ -42,7 +42,13 @@ def test_financials_suite():
             confidence="high",
         )
     ]
-    ptrs_data, is_bmk = extract_ptrs_parameters(mock_clinical_claims, "non-small cell lung cancer", "KRAS G12C")
+    # Keywords in the claims ("biomarker", "G12C") no longer switch the uplift
+    # on — only the program's own declared biomarker selection does.
+    _, is_bmk = extract_ptrs_parameters(mock_clinical_claims, "non-small cell lung cancer", "KRAS G12C")
+    assert is_bmk is False
+    ptrs_data, is_bmk = extract_ptrs_parameters(
+        mock_clinical_claims, "non-small cell lung cancer", "KRAS G12C", biomarker_selected=True
+    )
     assert is_bmk is True
     assert ptrs_data["Phase 1"]["base"] == 0.65
     assert ptrs_data["Phase 2"]["base"] == 0.35

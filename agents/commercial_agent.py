@@ -29,7 +29,13 @@ from sources.fetch_commercial import (
     get_epidemiology,
     get_pricing_analogues,
 )
-from .base import label_sources, make_claim_object, run_agent_llm_with_retry, validate_and_build_claims
+from .base import (
+    claim_cap_instruction,
+    label_sources,
+    make_claim_object,
+    run_agent_llm_with_retry,
+    validate_and_build_claims,
+)
 
 SYSTEM_PROMPT_COMPETITIVE = """You are a biotech commercial and competitive intelligence analyst on an investment committee.
 You evaluate the competitive dynamics, clinical pipeline, and target-level competition for a drug program.
@@ -117,12 +123,35 @@ IMPORTANT CONSTRAINTS:
 """
 
 
+# Basis id of a fallback row from data/market_data.csv (verified rows only) —
+# a real label, not a borrowed "S1" that belongs to some other fetched source.
+VERIFIED_CSV_BASIS = "market_data.csv (verified)"
+
+
+def _grounded_basis(basis, source_map: Optional[dict]) -> str:
+    """'evidence:<id>' only when <id> is a source the model was shown; anything
+    else (an invented or mistyped id, free text) is downgraded to 'inference'."""
+    text = str(basis or "").strip()
+    if text.lower().startswith("evidence:"):
+        source_id = text.split(":", 1)[1].strip()
+        if source_map and source_id in source_map:
+            return f"evidence:{source_id}"
+        return "inference"
+    return "inference"
+
+
 def _extract_market_assumptions_from_raw(
     raw_claims: list[dict],
     indication: str,
     cutoff_date: Optional[str] = None,
+    source_map: Optional[dict] = None,
 ) -> dict[str, dict]:
-    """Extract or construct market model parameter assumptions from LLM output and local data."""
+    """Extract or construct market model parameter assumptions from LLM output and local data.
+
+    These are read before the claim-level source check, so a basis of
+    "evidence:<id>" is verified here: the id must be a source the model was
+    actually shown (source_map), else the parameter counts as inference.
+    """
     assumptions: dict[str, dict] = {}
 
     for item in raw_claims:
@@ -135,7 +164,7 @@ def _extract_market_assumptions_from_raw(
             if base_val is not None:
                 low_val = item.get("low", base_val)
                 high_val = item.get("high", base_val)
-                basis_val = item.get("basis", "inference")
+                basis_val = _grounded_basis(item.get("basis"), source_map)
                 note_val = item.get("note", item.get("reasoning", ""))
                 assumptions[param] = {
                     "low": low_val,
@@ -150,7 +179,7 @@ def _extract_market_assumptions_from_raw(
         if isinstance(nested, dict):
             for k, v in nested.items():
                 if k in REQUIRED_PARAMETERS and isinstance(v, dict):
-                    assumptions[k] = v
+                    assumptions[k] = {**v, "basis": _grounded_basis(v.get("basis"), source_map)}
 
     # Fallback from the manual dataset if the LLM omitted a parameter — verified
     # rows only: an unverified hand-entered figure must never feed the rNPV.
@@ -163,7 +192,7 @@ def _extract_market_assumptions_from_raw(
                     "low": round(inc_val * 0.8),
                     "base": round(inc_val),
                     "high": round(inc_val * 1.2),
-                    "basis": "evidence:S1",
+                    "basis": f"evidence:{VERIFIED_CSV_BASIS}",
                     "note": f"Grounded in verified epidemiology data for {indication}",
                 }
             except (ValueError, TypeError):
@@ -178,7 +207,7 @@ def _extract_market_assumptions_from_raw(
                     "low": round(price_val * 0.8),
                     "base": round(price_val),
                     "high": round(price_val * 1.2),
-                    "basis": "evidence:S1",
+                    "basis": f"evidence:{VERIFIED_CSV_BASIS}",
                     "note": f"Grounded in verified pricing data ({pricing.get('drug_name')})",
                 }
             except (ValueError, TypeError):
@@ -215,6 +244,8 @@ def _run_commercial_opportunity_pass(
         + (f"Additional context: {extra_context}\n" if extra_context else "")
         + f"\nClinical analyst findings (upstream context):\n{clinical_summary}\n\n"
         f"Available commercial & competitive sources:\n{prompt_sources_block}\n"
+        + claim_cap_instruction(max_claims)
+        + " Market-parameter objects do not count toward this limit."
     )
 
     # 8000, not 4000: a reasoning-tier model (ChatGPT's gpt-6-luna included) spends
@@ -229,7 +260,7 @@ def _run_commercial_opportunity_pass(
         raw = ask_claude_json(SYSTEM_PROMPT_COMMERCIAL, user_prompt, max_tokens=8000)
 
     # 1. Extract market model assumptions before validating claim schema
-    assumptions = _extract_market_assumptions_from_raw(raw, indication, cutoff_date=cutoff_date)
+    assumptions = _extract_market_assumptions_from_raw(raw, indication, cutoff_date=cutoff_date, source_map=source_map)
 
     # 2. Validate standard LLM claims
     accepted_claims = validate_and_build_claims(

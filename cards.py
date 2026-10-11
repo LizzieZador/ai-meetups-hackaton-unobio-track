@@ -32,9 +32,10 @@ CARDS: list[dict] = [
     {
         "id": "market_sentiment",
         "title": "Market sentiment & expert intelligence",
-        "subtitle": "Earnings calls, press releases, KOL and analyst transcripts",
+        "subtitle": "Company 8-K filing activity from SEC EDGAR",
         "claim_sections": [],
         "raw_sources": ["market_news"],
+        "data_gap_note": "Filing counts only — no sentiment scoring, earnings-call, KOL or analyst transcript source is connected.",
     },
     {
         "id": "scientific_evidence",
@@ -49,7 +50,11 @@ CARDS: list[dict] = [
         "subtitle": "Medicare spending (CMS), epidemiology, market research, rNPV model and capital to next milestone",
         "claim_sections": ["commercial_opportunity", "capital_required"],
         "raw_sources": ["commercial", "medicare_spending"],
-        "data_gap_note": "Not available — underlying epidemiology data (market_data.csv) has not yet been verified by the team.",
+        "data_gap_note": (
+            "Epidemiology and pricing (market_data.csv) are not yet verified, so peak sales in the rNPV come from the "
+            "commercial agent's model or a disease-area placeholder (stated in each figure's reasoning). Medicare "
+            "spending (CMS) is Part B/D only — not total sales or TAM — and is not an input to the rNPV."
+        ),
     },
     {
         "id": "competitive_landscape",
@@ -72,6 +77,10 @@ CARDS: list[dict] = [
         "subtitle": "FDA Orange Book (small molecules) & Purple Book (biologics) exclusivity, Lens.org filings; litigation and freedom-to-operate not covered",
         "claim_sections": [],
         "raw_sources": ["patents", "regulatory", "orange_book", "purple_book"],
+        "data_gap_note": (
+            "Patent documents and legal status only — not a freedom-to-operate or litigation analysis. Lens.org "
+            "(requires LENS_API_TOKEN) is searched by the three leading analog drug names."
+        ),
     },
     {
         "id": "trial_design",

@@ -345,12 +345,22 @@ def validate_and_build_claims(
     print(f"[{agent_name}] Claims accepted: {len(accepted)}")
 
     if len(accepted) > max_claims:
+        # Evidence first (stable sort keeps the model's order within each type):
+        # a cap must never cut a verified fact to keep an inference.
+        accepted.sort(key=lambda c: c.type != "evidence")
         print(f"[{agent_name}] Truncating claims from {len(accepted)} to max_claims={max_claims}")
         for truncated_claim in accepted[max_claims:]:
             log_dropped_claim(agent_name, truncated_claim.to_dict(), f"Truncated because claims exceeded max_claims={max_claims}")
         accepted = accepted[:max_claims]
 
     return accepted
+
+
+def claim_cap_instruction(max_claims: int) -> str:
+    """Told to the model up front: claims beyond the cap are dropped anyway,
+    so writing them only spends output tokens."""
+    return (f"\n\nReturn at most {max_claims} claims — the most decision-relevant ones, "
+            "evidence claims before inferences.")
 
 
 def run_agent_llm_with_retry(
@@ -370,6 +380,7 @@ def run_agent_llm_with_retry(
     budget and return completely empty — confirmed live in a historical
     backtest run, at the old 4000 default, for exactly the agents that use
     this shared helper (ClinicalAgent among them)."""
+    user_prompt = user_prompt + claim_cap_instruction(max_claims)
     raw = ask_claude_json(system_prompt, user_prompt, max_tokens=max_tokens)
     if not raw:
         print(f"[{agent_name}] Initial LLM response was empty or unparseable. Retrying once...")

@@ -199,6 +199,11 @@ class FinancialResult:
 # ----------------------------------------------------------------------------
 # Extraction helpers for upstream data
 # ----------------------------------------------------------------------------
+PEAK_BASIS_MODEL = "commercial agent's market model (patients x price x penetration)"
+PEAK_BASIS_CLAIM = "a peak-sales figure stated in a commercial claim or source"
+PEAK_BASIS_HEURISTIC = "default heuristic by disease area — no modelled or verified peak sales available"
+
+
 def extract_peak_sales(
     commercial_claims: list[Claim],
     sources: Optional[dict] = None,
@@ -207,7 +212,9 @@ def extract_peak_sales(
 ) -> dict[str, float]:
     """Extract peak annual sales ($ Millions) from commercial claims or market model.
 
-    Returns dict {"low": float, "base": float, "high": float}.
+    Returns dict {"low": float, "base": float, "high": float, "basis": str} —
+    basis says where the figure came from, so a heuristic fallback is never
+    presented with the confidence of a modelled one.
     """
     # 1. Search in commercial claims for deterministic funnel claim
     for c in commercial_claims or []:
@@ -219,7 +226,8 @@ def extract_peak_sales(
                 base_val = float(m.group(1).replace(",", ""))
                 low_val = float(m.group(2).replace(",", ""))
                 high_val = float(m.group(3).replace(",", ""))
-                return {"low": round(low_val, 1), "base": round(base_val, 1), "high": round(high_val, 1)}
+                return {"low": round(low_val, 1), "base": round(base_val, 1), "high": round(high_val, 1),
+                        "basis": PEAK_BASIS_MODEL}
             except ValueError:
                 pass
 
@@ -228,7 +236,8 @@ def extract_peak_sales(
         if m2:
             try:
                 base_val = float(m2.group(1).replace(",", ""))
-                return {"low": round(base_val * 0.5, 1), "base": round(base_val, 1), "high": round(base_val * 2.0, 1)}
+                return {"low": round(base_val * 0.5, 1), "base": round(base_val, 1), "high": round(base_val * 2.0, 1),
+                        "basis": PEAK_BASIS_CLAIM}
             except ValueError:
                 pass
 
@@ -240,17 +249,18 @@ def extract_peak_sales(
             if m:
                 try:
                     val = float(m.group(1).replace(",", ""))
-                    return {"low": round(val * 0.5, 1), "base": round(val, 1), "high": round(val * 2.0, 1)}
+                    return {"low": round(val * 0.5, 1), "base": round(val, 1), "high": round(val * 2.0, 1),
+                            "basis": PEAK_BASIS_CLAIM}
                 except ValueError:
                     pass
 
-    # 3. Default fallback based on indication scale
+    # 3. Default fallback based on indication scale — a placeholder, not data
     ind_lower = indication.lower()
     if any(k in ind_lower for k in ("lung", "breast", "colon", "cancer", "oncology", "alzheimer", "cardio")):
-        return {"low": 800.0, "base": 2200.0, "high": 4500.0}
+        return {"low": 800.0, "base": 2200.0, "high": 4500.0, "basis": PEAK_BASIS_HEURISTIC}
     elif any(k in ind_lower for k in ("rare", "orphan", "genetic")):
-        return {"low": 250.0, "base": 650.0, "high": 1400.0}
-    return {"low": 500.0, "base": 1500.0, "high": 3000.0}
+        return {"low": 250.0, "base": 650.0, "high": 1400.0, "basis": PEAK_BASIS_HEURISTIC}
+    return {"low": 500.0, "base": 1500.0, "high": 3000.0, "basis": PEAK_BASIS_HEURISTIC}
 
 
 def extract_enrollment_from_aact(
@@ -290,20 +300,38 @@ def extract_enrollment_from_aact(
     return enrollment
 
 
+# A percentage counts as a phase's success probability only when the text says
+# so ("Phase 2 PTRS of 35%", "probability of success in Phase 2: 35%") — a
+# response rate or enrolment share next to "Phase 2" is not a PTRS.
+_PTRS_WORDS = r"(?:PTRS|PoS|probability of (?:technical (?:and regulatory )?)?success|success (?:rate|probability)|transition probability|likelihood of (?:success|approval))"
+
+
+def _stated_ptrs(text: str, ph_num: str) -> float | None:
+    """The success probability stated for this phase, from a sentence that is
+    about success probability at all ("PTRS: Phase 1 = 65%, Phase 2 = 35%")."""
+    for sentence in re.split(r"(?<=[.;])\s+", text):
+        if re.search(_PTRS_WORDS, sentence, re.I):
+            m = re.search(rf"Phase\s*{ph_num}\b[^%\d]{{0,25}}(\d{{1,2}}(?:\.\d)?)\s*%", sentence, re.I)
+            if m:
+                return float(m.group(1)) / 100.0
+    return None
+
+
 def extract_ptrs_parameters(
     clinical_claims: list[Claim],
     indication: str = "",
     mechanism: str = "",
+    biomarker_selected: bool = False,
 ) -> tuple[dict[str, dict[str, float]], bool]:
-    """Extract PTRS per phase from clinical claims, checking for biomarker stratification.
+    """PTRS per phase: disease-area benchmarks, an explicitly stated PTRS from
+    the clinical agent, and a biomarker-enrichment uplift only when the program
+    itself declares biomarker selection (the optional Biomarkers input) — a
+    mention of "mutation" or "G12C" in the literature is not a validated
+    selection strategy.
 
     Returns (ptrs_dict, is_biomarker_selected).
     """
-    is_biomarker_selected = False
-    all_text = " ".join(f"{c.claim} {c.reasoning or ''}" for c in clinical_claims or "").lower()
-
-    if any(k in all_text for k in ("biomarker", "companion diagnostic", "stratification", "g12c", "mutation", "selected patient")):
-        is_biomarker_selected = True
+    is_biomarker_selected = biomarker_selected
 
     ind_lower = indication.lower()
     is_oncology = any(k in ind_lower for k in ("cancer", "carcinoma", "tumor", "oncology", "nsclc", "leukemia", "lymphoma"))
@@ -315,7 +343,8 @@ def extract_ptrs_parameters(
         "Phase 3": dict(base_benchmarks["Phase 3"]),
     }
 
-    # If biomarker enrichment is identified, apply the ~1.3x - 1.5x PTRS multiplier (capped at 0.85)
+    # Declared biomarker selection: the ~1.2x - 1.4x enrichment multiplier (capped at 0.85).
+    # It assumes the selection assay works — flagged as such in the model's assumptions.
     if is_biomarker_selected:
         for ph in ptrs:
             for s in ("low", "base", "high"):
@@ -327,9 +356,8 @@ def extract_ptrs_parameters(
         text = f"{c.claim} {c.reasoning or ''}"
         for ph_num in ("1", "2", "3"):
             ph_key = f"Phase {ph_num}"
-            m = re.search(rf"Phase\s*{ph_num}[^%\d]*?(\d{{1,2}})%", text, re.I)
-            if m:
-                val = float(m.group(1)) / 100.0
+            val = _stated_ptrs(text, ph_num)
+            if val is not None:
                 if 0.05 <= val <= 0.95:
                     ptrs[ph_key]["base"] = val
                     ptrs[ph_key]["low"] = max(0.05, round(val * 0.75, 3))
@@ -351,6 +379,7 @@ def calculate_financials(
     discount_rate: float = DEFAULT_DISCOUNT_RATE,
     commercial_margin: float = DEFAULT_COMMERCIAL_MARGIN,
     cost_per_patient: Optional[dict[str, dict[str, float]]] = None,
+    is_biomarker_selected: bool = False,
 ) -> FinancialResult:
     """Calculate deterministic capital requirements, timelines, inflection points, and rNPV.
 
@@ -493,6 +522,9 @@ def calculate_financials(
         "cost_per_patient_base": {ph: f"${cost_patient[ph]['base']:,.0f}" for ph in cost_patient},
         "median_enrollment_applied": enrollment_by_phase,
         "program_stage": stage + (" (assumed — no stage given)" if stage_assumed else ""),
+        "peak_sales_basis": peak_sales_millions.get("basis", PEAK_BASIS_HEURISTIC),
+        "ptrs_biomarker_uplift": "applied — program declares biomarker selection (assay validity assumed, not verified)"
+                                 if is_biomarker_selected else "not applied",
     }
 
     return FinancialResult(
@@ -512,7 +544,7 @@ def calculate_financials(
         pv_development_cost_millions=pv_dev_cost,
         rnpv_millions=rnpv,
         licensing_terms=licensing_terms,
-        is_biomarker_selected=any("biomarker" in str(v).lower() for v in ptrs_per_phase.values()),
+        is_biomarker_selected=is_biomarker_selected,
         therapeutic_area=therapeutic_area,
         assumptions_summary=assumptions_summary,
         current_stage=stage,
@@ -531,11 +563,12 @@ def run_deterministic_financials(
     indication: str = "",
     mechanism: str = "",
     current_stage: Optional[str] = None,
+    biomarker_selected: bool = False,
 ) -> FinancialResult:
     """End-to-end wrapper: extracts all upstream inputs and executes the financial model."""
     peak_sales = extract_peak_sales(commercial_claims, sources, indication, mechanism)
     enrollment = extract_enrollment_from_aact(sources, indication)
-    ptrs_dict, is_bmk = extract_ptrs_parameters(clinical_claims, indication, mechanism)
+    ptrs_dict, is_bmk = extract_ptrs_parameters(clinical_claims, indication, mechanism, biomarker_selected)
 
     return calculate_financials(
         peak_sales_millions=peak_sales,
@@ -544,6 +577,7 @@ def run_deterministic_financials(
         indication=indication,
         mechanism=mechanism,
         current_stage=current_stage,
+        is_biomarker_selected=is_bmk,
     )
 
 
@@ -591,6 +625,13 @@ def format_financial_brief_for_chair(result: FinancialResult) -> str:
     return "\n".join(lines)
 
 
+def rnpv_confidence(r: FinancialResult) -> str:
+    """'medium' at most — even a modelled peak-sales figure rests on assumed
+    penetration, price and benchmark PTRS; 'low' when peak sales are only the
+    disease-area placeholder."""
+    return "medium" if r.peak_sales_millions.get("basis") == PEAK_BASIS_MODEL else "low"
+
+
 def stage_text(r: FinancialResult) -> str:
     return f"{r.current_stage} (assumed — no development stage given)" if r.stage_assumed else r.current_stage
 
@@ -617,9 +658,11 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
                 f"Discounted cash flow rNPV modeled in financials.py at {r.discount_rate*100:.1f}% WACC with 10-year commercial exclusivity. "
                 f"Low scenario: {ptrs['low']*100:.1f}% cumulative PTRS on ${p['low']:.1f}M peak sales with ${cap_tot['high']:.1f}M capital. "
                 f"Base scenario: {ptrs['base']*100:.1f}% cumulative PTRS on ${p['base']:.1f}M peak sales with ${cap_tot['base']:.1f}M capital. "
-                f"High scenario: {ptrs['high']*100:.1f}% cumulative PTRS on ${p['high']:.1f}M peak sales with ${cap_tot['low']:.1f}M capital."
+                f"High scenario: {ptrs['high']*100:.1f}% cumulative PTRS on ${p['high']:.1f}M peak sales with ${cap_tot['low']:.1f}M capital. "
+                f"Peak sales source: {p.get('basis', PEAK_BASIS_HEURISTIC)}. The arithmetic is deterministic; "
+                f"its inputs (peak sales, benchmark PTRS and costs) are assumptions, not verified data."
             ),
-            confidence="high",
+            confidence=rnpv_confidence(r),
         ),
         # Claim 2: Capital required to next major milestone
         Claim(
@@ -629,8 +672,8 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
             ),
             type="inference",
             section="capital_required",
-            reasoning=next_step_reasoning(r),
-            confidence="high",
+            reasoning=next_step_reasoning(r) + " Cost per patient is an industry benchmark, not program-specific data.",
+            confidence="medium",
         ),
         # Claim 3: Total capital to commercial approval & launch
         Claim(
@@ -641,7 +684,7 @@ def build_deterministic_financial_claims(result: FinancialResult) -> list[Claim]
             type="inference",
             section="capital_required",
             reasoning=total_capital_reasoning(r),
-            confidence="high",
+            confidence="medium",
         ),
         # Claim 4: Value inflection points & M&A / licensing outcomes
         Claim(

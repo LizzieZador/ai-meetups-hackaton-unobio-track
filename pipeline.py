@@ -238,7 +238,7 @@ def run_pipeline(
 
     indication/mechanism are normalized (trimmed + lowercased) right here, once,
     before touching any fetcher, cache key, or LLM prompt — "cancer" and "Cancer"
-    must be the exact same query internally. All 5 sources already match search
+    must be the exact same query internally. The text-search sources match search
     terms case-insensitively (confirmed directly against PubMed/Open
     Targets/ClinicalTrials.gov/AACT), so this never changes what's found, only
     whether two spellings of the same term share one cache entry and one set of
@@ -303,6 +303,7 @@ def run_pipeline(
             indication=indication,
             mechanism=mechanism,
             current_stage=details.get("stage"),
+            biomarker_selected=bool(details.get("biomarkers")),
         )
     except Exception as e:
         print(f"[Pipeline Warning] Deterministic financials calculation failed: {e}")

@@ -11,8 +11,10 @@ from typing import Optional
 
 from financials import (
     FinancialResult,
+    PEAK_BASIS_HEURISTIC,
     build_deterministic_financial_claims,
     format_financial_brief_for_chair,
+    rnpv_confidence,
     run_deterministic_financials,
 )
 from llm import ask_claude_json
@@ -350,12 +352,16 @@ def _enforce_deterministic_financials(
     rnpv_claim = next((c for c in synthesis_claims if c.section == "recommendation" and "rnpv" in c.claim.lower()), None)
     if rnpv_claim:
         rnpv_claim.claim = expected_rnpv_prefix
-        rnpv_claim.confidence = "high"
+        # Exact arithmetic, unverified inputs: confidence follows the peak-sales
+        # basis (financials.rnpv_confidence), never a blanket "high".
+        rnpv_claim.confidence = rnpv_confidence(financial_result)
         if not rnpv_claim.reasoning or "rnpv" not in rnpv_claim.reasoning.lower():
             rnpv_claim.reasoning = (
                 f"Discounted cash flow rNPV modeled deterministically at {financial_result.discount_rate*100:.1f}% WACC. "
                 + (rnpv_claim.reasoning or "")
             )
+        basis = financial_result.peak_sales_millions.get("basis", PEAK_BASIS_HEURISTIC)
+        rnpv_claim.reasoning = f"{rnpv_claim.reasoning.rstrip()} Peak sales source: {basis}."
     else:
         det_claims = build_deterministic_financial_claims(financial_result)
         verdict_idx = next(

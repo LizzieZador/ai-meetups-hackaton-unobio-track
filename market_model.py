@@ -116,6 +116,18 @@ def estimate_market(assumptions: dict[str, Any]) -> dict[str, Any]:
 
     completed_scenarios = 0
 
+    # low <= base <= high per parameter: a range given out of order is put in
+    # order (and noted) so "low" never ends up the most optimistic scenario.
+    assumptions = dict(assumptions)
+    for p in REQUIRED_PARAMETERS:
+        obj = assumptions.get(p)
+        if not isinstance(obj, dict):
+            continue
+        triple = [_extract_scenario_val(obj, s) for s in scenarios]
+        if all(v is not None for v in triple) and triple != sorted(triple):
+            notes.append(f"Parameter '{p}' had low/base/high out of order {triple}; reordered.")
+            assumptions[p] = {**obj, **dict(zip(scenarios, sorted(triple)))}
+
     # 2. Compute funnel for each scenario independently
     for s in scenarios:
         missing_for_scenario: list[str] = []
@@ -140,11 +152,12 @@ def estimate_market(assumptions: dict[str, Any]) -> dict[str, Any]:
         for frac_param in FRACTION_PARAMETERS:
             frac_val = vals[frac_param]
             if frac_val < 0.0 or frac_val > 1.0:
+                # A share above 100% (or below 0) is impossible — the scenario
+                # is rejected, not computed with a warning attached.
                 notes.append(
-                    f"Warning: parameter '{frac_param}.{s}' is outside valid fraction range [0.0, 1.0]: {frac_val}"
+                    f"Scenario '{s}' rejected: '{frac_param}' = {frac_val} is outside the valid fraction range [0.0, 1.0]."
                 )
-                if frac_val < 0.0:
-                    bounds_ok = False
+                bounds_ok = False
 
         if vals["prevalence_or_incidence"] < 0 or vals["annual_price"] < 0:
             notes.append(f"Scenario '{s}' rejected: negative population or price values.")

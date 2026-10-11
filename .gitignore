@@ -3,9 +3,11 @@ __pycache__/
 .venv/
 .env
 
-cache/*.json
+cache/
 data/aact/*.txt
 data/reports/*.json
 *.txt
+!requirements.txt
 *.zip
 .DS_Store
+.impeccable/hook.cache.json
