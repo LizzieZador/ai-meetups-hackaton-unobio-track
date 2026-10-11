@@ -255,6 +255,7 @@ def _report_summary(report: dict | None) -> str:
     return json.dumps({
         "mechanism": report.get("mechanism"),
         "indication": report.get("indication"),
+        "program_details": report.get("details") or {},
         "verdict": report.get("verdict"),
         "cards": [f"{c['number']}. {c['title']}" for c in report.get("cards", [])],
     }, ensure_ascii=False)
@@ -375,7 +376,10 @@ blocks. Nothing from your own general knowledge — if it isn't in the blocks, s
 have it. Explaining how the site works is always allowed.
 
 USE THE SCREEN: "this", "here", "this card" = SCREEN.open_card, else SCREEN.visible_cards. If the \
-page is "loading", the evaluation is still running; if "welcome", no report is in view.
+page is "loading", the evaluation is still running; if "welcome", no report is in view. \
+REPORT_CONTEXT.details holds the program details the user entered (modality, development stage, \
+route, biomarkers, preclinical results) — "our program" / "our asset" means that profile; compare \
+competitors against it when relevant.
 
 DRUG RECOMMENDATIONS (from drugs_for_indication results): rank by evidence for THIS disease — \
 "approved for this disease" > Phase 3 / pre-approval > earlier > "unverified" (never present an \

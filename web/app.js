@@ -172,7 +172,9 @@ function filledCount(report) {
 }
 
 function historyLabel(s) {
-  return s.mechanism === s.indication ? s.mechanism : `${s.mechanism} — ${s.indication}`;
+  const pair = s.mechanism === s.indication ? s.mechanism : `${s.mechanism} — ${s.indication}`;
+  const tags = [s.details?.stage, s.details?.modality].filter(Boolean);
+  return tags.length ? `${pair} · ${tags.join(", ")}` : pair;
 }
 
 let lastActiveHistoryKey = null;
@@ -199,7 +201,7 @@ function renderHistory(activeKey) {
     return;
   }
   filtered.forEach((s) => {
-    const key = `${s.indication}\u0000${s.mechanism}`;
+    const key = searchKey(s);
     const li = document.createElement("li");
     li.className = key === lastActiveHistoryKey ? "active" : "";
     const dotClass = verdictDotClass(s.report.verdict);
@@ -210,6 +212,7 @@ function renderHistory(activeKey) {
       setSearchMode("detailed");
       $("indication").value = s.indication;
       $("mechanism").value = s.mechanism;
+      writeDetails(s.details || {});
       $("evaluate").disabled = false;
       show(s.report);
       renderHistory(key);
@@ -666,6 +669,7 @@ function show(report) {
           : ""
       }
     </div>
+    ${detailChips(report.details)}
     <div class="grid">${report.cards.map(renderCard).join("")}</div>
     <p class="cost">~$${esc(c.approx_cost_usd)} · ${esc(c.calls)} calls · ${esc(c.model)}</p>`;
   $("content").querySelectorAll(".expand").forEach((b) => {
@@ -703,12 +707,10 @@ async function evaluate(body) {
     // The server resolves "query" into indication/mechanism either way, so
     // history always keys off its response, not the raw form input.
     const { indication, mechanism } = data;
-    searches = [
-      { indication, mechanism, at: Date.now(), report: data },
-      ...searches.filter((s) => !(s.indication === indication && s.mechanism === mechanism)),
-    ];
+    const entry = { indication, mechanism, details: data.details || {}, at: Date.now(), report: data };
+    searches = [entry, ...searches.filter((s) => searchKey(s) !== searchKey(entry))];
     saveHistory();
-    renderHistory(`${indication}\u0000${mechanism}`);
+    renderHistory(searchKey(entry));
     show(data);
   } catch (e) {
     $("content").innerHTML = `<p class="error">${esc(e.message)}</p>`;
@@ -740,13 +742,71 @@ function updateEvaluateEnabled() {
 
 $("search-mode-toggle").onclick = () => setSearchMode(searchMode === "detailed" ? "quick" : "detailed");
 
+/* Optional program details (task brief): modality, development stage, route,
+   biomarkers, preclinical results — sent with the search and given to every
+   agent as context. Field ids mirror server.DETAIL_FIELDS. */
+const DETAIL_INPUTS = {
+  modality: ["d-modality", "Modality"],
+  stage: ["d-stage", "Stage"],
+  route: ["d-route", "Route"],
+  biomarkers: ["d-biomarkers", "Biomarkers"],
+  preclinical: ["d-preclinical", "Preclinical"],
+};
+
+function readDetails() {
+  const out = {};
+  Object.entries(DETAIL_INPUTS).forEach(([key, [id]]) => {
+    const value = $(id).value.trim();
+    if (value) out[key] = value;
+  });
+  return out;
+}
+
+function writeDetails(details) {
+  Object.entries(DETAIL_INPUTS).forEach(([key, [id]]) => { $(id).value = (details && details[key]) || ""; });
+  updateDetailsToggle();
+}
+
+function updateDetailsToggle() {
+  const n = Object.keys(readDetails()).length;
+  const open = !$("search-details").classList.contains("hidden");
+  $("details-toggle").textContent = `${open ? "− " : "+ "}Details${n ? ` (${n})` : ""}`;
+  $("details-toggle").classList.toggle("has-details", n > 0);
+}
+
+$("details-toggle").onclick = () => {
+  const open = $("search-details").classList.toggle("hidden") === false;
+  $("details-toggle").setAttribute("aria-expanded", String(open));
+  updateDetailsToggle();
+};
+$("details-clear").onclick = () => writeDetails({});
+Object.values(DETAIL_INPUTS).forEach(([id]) => { $(id).addEventListener("input", updateDetailsToggle); });
+
+// A search is identified by its pair AND its details: the same pair evaluated
+// as a Phase 1 oral small molecule vs. an approved antibody is another search.
+function searchKey(s) {
+  return `${s.indication}\u0000${s.mechanism}\u0000${JSON.stringify(s.details || {})}`;
+}
+
+function detailChips(details) {
+  const entries = Object.entries(DETAIL_INPUTS).filter(([key]) => details && details[key]);
+  if (!entries.length) return "";
+  return `<div class="report-details">${entries
+    .map(([key, [, label]]) => {
+      const value = details[key].length > 80 ? `${details[key].slice(0, 77)}…` : details[key];
+      return `<span class="detail-chip" title="${esc(details[key])}"><b>${esc(label)}</b>${esc(value)}</span>`;
+    })
+    .join("")}</div>`;
+}
+
 $("search").onsubmit = (e) => {
   e.preventDefault();
   if ($("evaluate").disabled) return;
+  const details = readDetails();
   if (searchMode === "detailed") {
-    evaluate({ indication: $("indication").value.trim(), mechanism: $("mechanism").value.trim() });
+    evaluate({ indication: $("indication").value.trim(), mechanism: $("mechanism").value.trim(), details });
   } else {
-    evaluate({ query: $("query").value.trim() });
+    evaluate({ query: $("query").value.trim(), details });
   }
 };
 $("indication").oninput = updateEvaluateEnabled;

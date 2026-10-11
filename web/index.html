@@ -139,8 +139,44 @@
           <input id="query" type="text" placeholder="e.g. KRAS G12C | Non-Small Cell Lung Cancer" autocomplete="off">
         </div>
         <button type="button" id="search-mode-toggle" class="mode-toggle">Quick search</button>
+        <button type="button" id="details-toggle" class="mode-toggle" aria-expanded="false" aria-controls="search-details">+ Details</button>
         <button id="evaluate" type="submit" disabled>Evaluate</button>
       </form>
+      <!-- Optional program details (task brief: modality, development stage,
+           preclinical results, biomarkers, route) — passed to every agent. -->
+      <div id="search-details" class="search-details hidden">
+        <label>Modality
+          <input id="d-modality" list="modality-options" maxlength="120" placeholder="e.g. Small molecule" autocomplete="off">
+        </label>
+        <label>Development stage
+          <select id="d-stage">
+            <option value="">—</option>
+            <option>Discovery</option><option>Preclinical</option><option>IND-enabling</option>
+            <option>Phase 1</option><option>Phase 2</option><option>Phase 3</option>
+            <option>Filed (NDA/BLA)</option><option>Approved</option>
+          </select>
+        </label>
+        <label>Route of administration
+          <input id="d-route" list="route-options" maxlength="120" placeholder="e.g. Oral" autocomplete="off">
+        </label>
+        <label>Biomarkers
+          <input id="d-biomarkers" maxlength="300" placeholder="e.g. KRAS G12C mutation, PD-L1 ≥50%" autocomplete="off">
+        </label>
+        <label class="wide">Preclinical results
+          <textarea id="d-preclinical" maxlength="1500" rows="2" placeholder="e.g. 80% tumor regression in xenograft at 30 mg/kg; no hERG liability"></textarea>
+        </label>
+        <button type="button" id="details-clear" class="mode-toggle">Clear details</button>
+        <datalist id="modality-options">
+          <option value="Small molecule"><option value="Monoclonal antibody"><option value="Antibody-drug conjugate (ADC)">
+          <option value="Bispecific antibody"><option value="Peptide"><option value="Protein / enzyme">
+          <option value="siRNA"><option value="Antisense oligonucleotide"><option value="mRNA">
+          <option value="Gene therapy"><option value="Cell therapy (CAR-T)"><option value="Vaccine"><option value="Radioligand">
+        </datalist>
+        <datalist id="route-options">
+          <option value="Oral"><option value="Intravenous"><option value="Subcutaneous"><option value="Intramuscular">
+          <option value="Inhaled"><option value="Intranasal"><option value="Intrathecal"><option value="Intravitreal"><option value="Topical">
+        </datalist>
+      </div>
     </header>
     <section id="content"><p class="empty">Search a drug, an indication or a mechanism to build an evaluation.</p></section>
   </main>

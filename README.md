@@ -15,6 +15,9 @@ python server.py        # http://127.0.0.1:5000
 
 Запит вводиться одним рядком: `KRAS G12C | Non-Small Cell Lung Cancer`
 (роздільники: `|`, `×`, `/`, `for`, `in`) або двома полями в Detailed search.
+Кнопка **+ Details** додає необов'язкові параметри програми: modality,
+development stage, route of administration, biomarkers, preclinical results —
+вони передаються всім агентам як контекст і показуються у звіті.
 
 ## Як це працює
 

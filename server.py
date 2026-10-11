@@ -1,8 +1,9 @@
 """Web UI backend — serves the static front-end in web/ and exposes the pipeline as JSON.
 
 GET  /              -> web/index.html (search sidebar + the 10-card grid)
-POST /api/evaluate   -> {"indication": "...", "mechanism": "..."} OR {"query": "mechanism | indication"}
-                        -> {verdict, cards, cost}
+POST /api/evaluate   -> {"indication": "...", "mechanism": "..."} OR {"query": "mechanism | indication"},
+                        optional "details": {modality, stage, route, biomarkers, preclinical}
+                        -> {verdict, cards, cost, details}
 POST /api/assistant   -> {"message": "...", "history": [...], "report": <loaded report | null>}
                         -> {"reply": "...", "search": {"mechanism","indication"} | None}
 
@@ -57,7 +58,9 @@ def split_query(query: str) -> tuple[str, str]:
     return cleaned, cleaned
 
 
-def build_report(indication: str, mechanism: str, claims: list[Claim], cost: dict, sources: dict) -> dict:
+def build_report(
+    indication: str, mechanism: str, claims: list[Claim], cost: dict, sources: dict, details: dict | None = None
+) -> dict:
     verdict_claim = next(
         (c for c in claims if c.section == "recommendation" and c.claim in VERDICTS), None
     )
@@ -65,11 +68,33 @@ def build_report(indication: str, mechanism: str, claims: list[Claim], cost: dic
     return {
         "indication": indication,
         "mechanism": mechanism,
+        "details": details or {},
         "verdict": verdict_claim.claim if verdict_claim else None,
         "verdict_reasoning": (verdict_claim.reasoning if verdict_claim else None),
         "cards": build_cards(claims, sources, analogs, mechanism),
         "cost": cost,
     }
+
+
+# The task brief's optional program inputs: field -> (label, max length).
+DETAIL_FIELDS = {
+    "modality": ("Modality", 120),
+    "stage": ("Development stage", 60),
+    "route": ("Route of administration", 120),
+    "biomarkers": ("Biomarkers", 300),
+    "preclinical": ("Preclinical results", 1500),
+}
+
+
+def parse_details(raw) -> dict:
+    """Optional details from the request: known fields only, text only, capped."""
+    raw = raw if isinstance(raw, dict) else {}
+    return {key: _text(raw.get(key))[:limit] for key, (_, limit) in DETAIL_FIELDS.items() if _text(raw.get(key))}
+
+
+def details_context(details: dict) -> str:
+    """The agents' extra_context: one labelled line per provided detail."""
+    return "\n".join(f"{DETAIL_FIELDS[k][0]}: {v}" for k, v in details.items())
 
 
 @app.get("/")
@@ -104,11 +129,12 @@ def evaluate():
         mechanism = _text(body.get("mechanism"))
     if not indication or not mechanism:
         return jsonify(error="Both Indication and Mechanism/Target are required."), 400
+    details = parse_details(body.get("details"))
     try:
-        claims, cost, sources = run_pipeline(indication, mechanism)
+        claims, cost, sources = run_pipeline(indication, mechanism, extra_context=details_context(details))
     except Exception as e:  # surface API-key / network problems to the UI instead of a 500 page
         return jsonify(error=f"Pipeline failed: {e}"), 500
-    return jsonify(build_report(indication, mechanism, claims, cost, sources))
+    return jsonify(build_report(indication, mechanism, claims, cost, sources, details))
 
 
 @app.post("/api/assistant")
