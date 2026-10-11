@@ -416,6 +416,8 @@ questions favour late-stage investigational assets with active trials, and use a
 the competitive benchmark. For a question about treating a person: one clause noting this is \
 investment research, not medical advice.
 
+LANGUAGE: answer in the language of the user's LATEST message, whatever it is — Ukrainian question -> Ukrainian answer, Russian -> Russian, English -> English, and so on. Translate the section labels too (**Answer:** -> **Відповідь:** / **Ответ:**, **Evidence** -> **Докази** / **Доказательства**, **Candidates** -> **Кандидати**, **Why** -> **Чому**, **Next** -> **Далі**, LIMITATIONS -> **Обмеження**). Never answer in a different language than the question, and never add a translation of your own answer. If the user switches language mid-chat, follow the newest message, not the history. A message with no words to judge by (only a number, a link or an emoji) takes the language of the user's previous message, else English. Keep in their original form, untranslated: drug, gene and company names (ocrelizumab, KRAS G12C, UCB), trial IDs, the source tags in square brackets, and the SEARCH line below.
+
 FORMAT — structured, zero filler:
 **Answer:** one sentence that answers the question.
 Then only the sections that apply, each a few "- " lines of facts:
@@ -424,12 +426,11 @@ End every fact line with a short source tag: [Card 5] / [Report] only for facts 
 REPORT_CONTEXT; [Open Targets], [FDA], [FDA label], [FAERS], [Orange Book], [Purple Book], [EMA], \
 [CMS], [CT.gov NCTxxxx], [PubMed], [SEC], [Lens] for \
 facts from TOOL_RESULTS.
-Reply in the language the user wrote in (Ukrainian question -> Ukrainian answer, section labels too). \
 No greetings, no restating the question, no generic caveats. At most ~10 lines.
 
 SEARCH line: to propose evaluating something on the site, end with exactly one line
 SEARCH: <short target gene or 2-4 word drug class> | <indication in English>
-e.g. "SEARCH: BTK inhibitor | Multiple Sclerosis". Omit it otherwise.
+e.g. "SEARCH: BTK inhibitor | Multiple Sclerosis". Omit it otherwise. This line is read by the site, not by the user: keep the keyword exactly "SEARCH:" and both terms in English even when the rest of your answer is in another language (the databases are English-only).
 
 LIMITATIONS (state them accurately if asked): you see structured screen state, not pixels; one \
 round of at most {MAX_TOOLS} lookups per message; you don't run the full committee evaluation \
@@ -449,8 +450,14 @@ def _format_history(history: list[dict]) -> str:
 
 
 # A SEARCH line anywhere in the reply, optionally wrapped in markdown bold.
-_SEARCH_LINE = re.compile(r"^[ \t]*\**[ \t]*SEARCH:[ \t]*(.+?)[ \t]*\|[ \t]*(.+?)[ \t]*\**[ \t]*$", re.I | re.M)
-_ANY_SEARCH_LINE = re.compile(r"^[ \t]*\**[ \t]*SEARCH:.*$\n?", re.I | re.M)
+# The keyword is asked for in English, but a model answering in Ukrainian or
+# Russian sometimes translates it anyway — accepted here so the "Run this
+# search" button doesn't silently disappear on a non-English answer.
+_SEARCH_WORD = r"(?:SEARCH|ПОШУК|ПОИСК)"
+_SEARCH_LINE = re.compile(
+    rf"^[ \t]*\**[ \t]*{_SEARCH_WORD}:[ \t]*(.+?)[ \t]*\|[ \t]*(.+?)[ \t]*\**[ \t]*$", re.I | re.M
+)
+_ANY_SEARCH_LINE = re.compile(rf"^[ \t]*\**[ \t]*{_SEARCH_WORD}:.*$\n?", re.I | re.M)
 
 
 def ask_assistant(message: str, history: list[dict], report: dict | None, screen: dict | None = None) -> dict:

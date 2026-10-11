@@ -963,14 +963,38 @@ const LOOKUP_LABELS = {
   worldwide_patents: "Lens.org",
 };
 
+/* The assistant answers in the language the client writes in (see the LANGUAGE
+   rule in assistant.py), so the labels around its answer follow the same
+   script instead of sitting in English next to a Ukrainian reply. The script
+   is read off the message text, which means a reopened chat relabels itself
+   correctly without storing anything extra. */
+const UI_LABELS = {
+  en: { You: "You", Assistant: "Assistant", checked: "Checked", suggested: "Suggested search", run: "Run this search", in: "in" },
+  uk: { You: "Ви", Assistant: "Асистент", checked: "Перевірено", suggested: "Пропонований пошук", run: "Запустити пошук", in: "при" },
+  ru: { You: "Вы", Assistant: "Ассистент", checked: "Проверено", suggested: "Предлагаемый поиск", run: "Запустить поиск", in: "при" },
+};
+
+function langOf(text) {
+  const s = String(text || "");
+  if (!/[\u0400-\u04FF]/.test(s)) return "en";
+  // Both are Cyrillic; these letters exist in Ukrainian and not in Russian.
+  return /[іїєґІЇЄҐ]/.test(s) ? "uk" : "ru";
+}
+
+// Updated by every real chat message, so the pending "…" note, the lookup line
+// and the suggested-search block all match the conversation they belong to.
+let chatLang = "en";
+
 function appendAssistantMsg(who, text, cls, lookups) {
   const log = $("assistant-log");
   log.classList.remove("hidden");
+  if (!cls) chatLang = langOf(text); // skip notes: "…" and server errors
+  const labels = UI_LABELS[chatLang];
   const div = document.createElement("div");
   div.className = cls ? `assistant-msg ${cls}` : "assistant-msg";
   const checked = (lookups || []).map((l) => LOOKUP_LABELS[l] || l);
-  div.innerHTML = `<span class="who">${esc(who)}</span>${formatAssistantText(text)}${
-    checked.length ? `<span class="assistant-lookups">Checked: ${esc(checked.join(" · "))}</span>` : ""
+  div.innerHTML = `<span class="who">${esc(labels[who] || who)}</span>${formatAssistantText(text)}${
+    checked.length ? `<span class="assistant-lookups">${esc(labels.checked)}: ${esc(checked.join(" · "))}</span>` : ""
   }`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
@@ -981,9 +1005,10 @@ function appendAssistantSearch(search) {
   const log = $("assistant-log");
   const div = document.createElement("div");
   div.className = "assistant-msg assistant-search";
-  div.innerHTML = `<span class="who">Suggested search</span>
-    <span class="assistant-search-terms">${esc(search.mechanism)} <span class="label">in</span> ${esc(search.indication)}</span>
-    <button type="button" class="assistant-search-run">Run this search</button>`;
+  const labels = UI_LABELS[chatLang];
+  div.innerHTML = `<span class="who">${esc(labels.suggested)}</span>
+    <span class="assistant-search-terms">${esc(search.mechanism)} <span class="label">${esc(labels.in)}</span> ${esc(search.indication)}</span>
+    <button type="button" class="assistant-search-run">${esc(labels.run)}</button>`;
   div.querySelector(".assistant-search-run").onclick = () => {
     if (pendingQuery) return; // an evaluation is already running
     setSearchMode("detailed");
