@@ -20,6 +20,7 @@ from typing import Optional
 import requests
 
 from sources.fetch_orange_book import first_us_approval
+from sources.cache import atomic_write
 
 API_URL = "https://api.fda.gov/drug/drugsfda.json"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
@@ -101,7 +102,7 @@ def _query_one(search: str, limit: int) -> Optional[list[dict]]:
         resp = requests.get(API_URL, params=params, timeout=15)
         if resp.status_code == 404:
             # A well-formed query with no matching approved application.
-            cache_path.write_text("[]", encoding="utf-8")
+            atomic_write(cache_path, "[]")
             return []
         resp.raise_for_status()
         data = resp.json().get("results", [])
@@ -110,7 +111,7 @@ def _query_one(search: str, limit: int) -> Optional[list[dict]]:
         # authoritative empty result; the next run should retry the API.
         return None
 
-    cache_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(cache_path, json.dumps(data, ensure_ascii=False, indent=2))
     return data
 
 

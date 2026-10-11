@@ -21,6 +21,8 @@ SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 # beyond the hackathon.
 import os
 
+from sources.cache import atomic_write
+
 USER_AGENT = os.environ.get(
     "SEC_EDGAR_USER_AGENT", "UNOBIO-Hackathon-InvestmentCommittee research@unobio-hackathon.local"
 )
@@ -70,7 +72,7 @@ def _search_cached(term: str, forms: str) -> list[dict]:
         hits = _fetch(params)
         if hits is None:
             return []
-        cache_path.write_text(json.dumps(hits, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write(cache_path, json.dumps(hits, ensure_ascii=False, indent=2))
 
     return hits
 

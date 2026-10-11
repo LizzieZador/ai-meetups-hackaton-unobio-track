@@ -11,6 +11,8 @@ from typing import Optional, Union
 
 import requests
 
+from sources.cache import atomic_write
+
 API_URL = "https://clinicaltrials.gov/api/v2/studies"
 _NON_THERAPY = re.compile(r"placebo|contrast|gadolin|tracer|radioligand for imaging|vehicle", re.I)
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
@@ -56,7 +58,7 @@ def fetch_clinicaltrials(
 
     results = _fetch(params)
     if results is not None:
-        cache_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write(cache_path, json.dumps(results, ensure_ascii=False, indent=2))
     return results
 
 

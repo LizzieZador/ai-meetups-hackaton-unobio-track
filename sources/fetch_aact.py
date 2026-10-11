@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 
+from sources.cache import atomic_write
+
 try:
     from .cache import CACHE_DIR, _slug
 except ImportError:
@@ -423,7 +425,7 @@ def fetch_aact(
 
     records = analysis["records"]
     try:
-        cache_file.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write(cache_file, json.dumps(records, ensure_ascii=False, indent=2))
     except OSError:
         pass
     return records

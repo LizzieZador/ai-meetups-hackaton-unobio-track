@@ -10,6 +10,7 @@ evaluation is reproducible and auditable.
 import datetime
 import json
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -48,6 +49,8 @@ from sources.fetch_regulatory import fetch_regulatory_signals
 from sources.fetch_secedgar import fetch_press_releases
 
 REPORTS_DIR = Path(__file__).resolve().parent / "data" / "reports"
+# Fetches are network-bound; each API is hit by at most a couple of threads at once.
+FETCH_WORKERS = 8
 
 
 def collect_sources(
@@ -55,7 +58,7 @@ def collect_sources(
     mechanism: str,
     cutoff_date: Optional[str] = None,
 ) -> dict:
-    """Fetch raw snippets from all five sources.
+    """Fetch raw snippets from every connected source.
 
     Uses the richer collectors (8-angle PubMed search + target context for
     scientific/translation evidence; AACT direct-competitor analysis +
@@ -67,9 +70,37 @@ def collect_sources(
 
     Any source that fails (or returns None) becomes an empty list here — the
     pipeline keeps going with whatever evidence is actually available.
+
+    The sources are fetched in parallel, in three waves dictated by data
+    dependencies: (1) everything keyed by indication/mechanism alone;
+    (2) everything keyed by the analog drug names wave 1 found; (3) Orange
+    Book, which needs the openFDA application numbers from wave 2.
     """
-    sci_bundle = collect_scientific_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date) or {}
-    comm_bundle = collect_commercial_sources(indication=indication, mechanism=mechanism, cutoff_date=cutoff_date) or {}
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        return _collect_sources(pool, indication, mechanism, cutoff_date)
+
+
+def _collect_sources(pool: ThreadPoolExecutor, indication: str, mechanism: str, cutoff_date: Optional[str]) -> dict:
+    def submit(name: str, fn, *args, **kwargs) -> Future:
+        """Run one fetch in the pool; a failure there yields [] (logged), never a failed run."""
+        def run():
+            try:
+                return fn(*args, **kwargs) or []
+            except Exception as e:
+                print(f"[Pipeline Warning] {name} lookup failed: {e}")
+                return []
+        return pool.submit(run)
+
+    # Wave 1 — keyed by indication/mechanism only.
+    sci_future = submit("scientific", collect_scientific_sources, indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
+    comm_future = submit("commercial", collect_commercial_sources, indication=indication, mechanism=mechanism, cutoff_date=cutoff_date)
+    trials_future = submit("clinicaltrials", fetch_clinicaltrials, condition=indication, intervention=mechanism)
+    target_future = (
+        submit("target resolution", lambda: [(_resolve_entity(mechanism, "target") or {}).get("name") or ""])
+        if not cutoff_date else None
+    )
+    sci_bundle = sci_future.result() or {}
+    comm_bundle = comm_future.result() or {}
 
     # sci_bundle's two lists overlap by design (the "clinical"/"opentargets"
     # query groups feed both scientific_thesis and human_translation) — dedupe
@@ -119,44 +150,44 @@ def collect_sources(
     # analog (e.g. a user searching "sotorasib" alone).
     analog_names = [d["name"] for d in extract_analogs(sources={"opentargets": opentargets_records}) if d.get("name")]
     query_terms = analog_names or ([mechanism] if mechanism else [])
-    clinicaltrials_records = fetch_clinicaltrials(condition=indication, intervention=mechanism) or []
+    clinicaltrials_records = trials_future.result()
+
+    # Wave 2 — keyed by the analog drug names.
     # 10, not 5: analogs now come furthest-along first, and the top of that list
     # often holds drugs approved only outside the US (no openFDA record), which
     # pushed FDA-approved ones past a 5-name cut. openFDA is keyless and cached.
-    regulatory_records = fetch_regulatory_signals(query_terms[:10]) if query_terms else []
+    futures: dict[str, Future] = {}
+    if query_terms:
+        futures["regulatory"] = submit("openFDA", fetch_regulatory_signals, query_terms[:10])
+        futures["market_news"] = submit("SEC EDGAR", fetch_press_releases, query_terms[:3], max_per_term=4)
+        futures["patents"] = submit("Lens.org", fetch_patent_signals, query_terms[:3], max_per_term=5)
 
     # Drug profiles, Orange/Purple Book, labels, FAERS, Medicare spending and
     # EMA are present-day snapshots with no historical view, so a backtest
     # (cutoff_date set) skips them rather than leaking later approvals,
     # competitors or safety signals into a past-dated evaluation.
-    drug_profiles: list[dict] = []
-    orange_book: list[dict] = []
-    present_day: dict[str, list[dict]] = {k: [] for k in ("fda_labels", "adverse_events", "purple_book", "medicare_spending", "ema")}
+    present_day_keys = ("drug_profiles", "orange_book", "fda_labels", "adverse_events", "purple_book", "medicare_spending", "ema")
     if not cutoff_date:
-        try:
-            target_symbol = (_resolve_entity(mechanism, "target") or {}).get("name") or ""
-            drug_profiles = fetch_competitor_profiles(target_symbol, analog_names, clinicaltrials_records)
-        except Exception as e:  # enrichment only — never fail the run over it
-            print(f"[Pipeline Warning] drug profile enrichment failed: {e}")
-        try:
-            orange_book = fetch_orange_book_patents(regulatory_records)
-        except Exception as e:
-            print(f"[Pipeline Warning] Orange Book lookup failed: {e}")
+        target_symbol = target_future.result()[0] if target_future.result() else ""
+        futures["drug_profiles"] = submit(
+            "drug profile", fetch_competitor_profiles, target_symbol, analog_names, clinicaltrials_records
+        )
         # Labels, safety, biologic exclusivity, Medicare spending and EU status
         # for the same furthest-along competitors openFDA was queried for.
         names = query_terms[:10] if analog_names else []
-        for key, fetch in (
-            ("fda_labels", fetch_drug_labels),
-            ("adverse_events", lambda n: fetch_adverse_events(n, indication)),
-            ("purple_book", fetch_biologic_exclusivity),
-            ("medicare_spending", fetch_medicare_spending),
-            ("ema", fetch_eu_approvals),
-        ):
-            try:
-                present_day[key] = fetch(names) if names else []
-            except Exception as e:
-                print(f"[Pipeline Warning] {key} lookup failed: {e}")
+        if names:
+            futures["fda_labels"] = submit("FDA labels", fetch_drug_labels, names)
+            futures["adverse_events"] = submit("FAERS", fetch_adverse_events, names, indication)
+            futures["purple_book"] = submit("Purple Book", fetch_biologic_exclusivity, names)
+            futures["medicare_spending"] = submit("Medicare spending", fetch_medicare_spending, names)
+            futures["ema"] = submit("EMA", fetch_eu_approvals, names)
 
+    regulatory_records = futures["regulatory"].result() if "regulatory" in futures else []
+    # Wave 3 — Orange Book reads the application numbers openFDA returned.
+    if not cutoff_date and regulatory_records:
+        futures["orange_book"] = submit("Orange Book", fetch_orange_book_patents, regulatory_records)
+
+    results = {key: future.result() for key, future in futures.items()}
     return {
         "pubmed": pubmed_records,
         "opentargets": opentargets_records,
@@ -164,11 +195,9 @@ def collect_sources(
         "aact": aact_records,
         "commercial": comm_bundle.get("commercial", []),
         "regulatory": regulatory_records,
-        "market_news": fetch_press_releases(query_terms[:3], max_per_term=4) if query_terms else [],
-        "patents": fetch_patent_signals(query_terms[:3], max_per_term=5) if query_terms else [],
-        "drug_profiles": drug_profiles,
-        "orange_book": orange_book,
-        **present_day,
+        "market_news": results.get("market_news", []),
+        "patents": results.get("patents", []),
+        **{key: results.get(key, []) for key in present_day_keys},
     }
 
 

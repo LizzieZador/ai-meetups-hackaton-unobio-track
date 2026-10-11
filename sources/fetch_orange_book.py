@@ -16,6 +16,7 @@ import csv
 import datetime
 import io
 import re
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -28,6 +29,7 @@ REFRESH_DAYS = 30
 APP_URL = "https://www.accessdata.fda.gov/scripts/cder/ob/results_product.cfm?Appl_Type={t}&Appl_No={n}"
 
 _tables: dict | None = None
+_load_lock = threading.Lock()  # parallel fetch threads share one load
 
 
 def _ensure_zip() -> Path | None:
@@ -47,6 +49,11 @@ def _ensure_zip() -> Path | None:
 
 
 def _load() -> dict | None:
+    with _load_lock:
+        return _load_unlocked()
+
+
+def _load_unlocked() -> dict | None:
     global _tables
     if _tables is not None:
         return _tables

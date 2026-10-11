@@ -12,6 +12,8 @@ from pathlib import Path
 
 import requests
 
+from sources.cache import atomic_write
+
 API_URL = "https://api.fda.gov/drug/label.json"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 
@@ -47,7 +49,7 @@ def _query_field(field: str, name: str) -> list[dict] | None:
             data = resp.json().get("results", [])
     except (requests.RequestException, ValueError):
         return None  # outage: not cached, retried next run
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    atomic_write(path, json.dumps(data, ensure_ascii=False))
     return data
 
 

@@ -15,6 +15,8 @@ from urllib.parse import quote
 
 import requests
 
+from sources.cache import atomic_write
+
 API_URL = "https://api.fda.gov/drug/event.json"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 TOP_REACTIONS = 6
@@ -38,7 +40,7 @@ def _get(params: dict) -> dict | None:
             return None
     except (requests.RequestException, ValueError):
         return None
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    atomic_write(path, json.dumps(data, ensure_ascii=False))
     return data
 
 

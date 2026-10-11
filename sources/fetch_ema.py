@@ -8,6 +8,7 @@ biosimilars excluded (they'd show the copy's date, not the originator's).
 """
 import datetime
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -18,9 +19,15 @@ CACHE_PATH = Path(__file__).resolve().parent.parent / "cache" / "ema_medicines.j
 REFRESH_DAYS = 30
 
 _data: list[dict] | None = None
+_load_lock = threading.Lock()  # parallel fetch threads share one load
 
 
 def _load() -> list[dict]:
+    with _load_lock:
+        return _load_unlocked()
+
+
+def _load_unlocked() -> list[dict]:
     global _data
     if _data is not None:
         return _data

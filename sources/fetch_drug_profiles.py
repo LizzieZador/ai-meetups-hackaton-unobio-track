@@ -30,6 +30,8 @@ from typing import Optional
 
 import requests
 
+from sources.cache import atomic_write
+
 API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -98,7 +100,7 @@ def fetch_drug_profile(name: str) -> Optional[dict]:
             "mechanism": ", ".join(dict.fromkeys(r["mechanismOfAction"] for r in rows if r.get("mechanismOfAction"))) or None,
             "targets": sorted({t["approvedSymbol"] for r in rows for t in (r.get("targets") or []) if t.get("approvedSymbol")}),
         }
-    cache_path.write_text(json.dumps(profile, ensure_ascii=False), encoding="utf-8")
+    atomic_write(cache_path, json.dumps(profile, ensure_ascii=False))
     return profile
 
 

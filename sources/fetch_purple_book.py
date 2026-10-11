@@ -11,6 +11,7 @@ import csv
 import datetime
 import io
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -22,6 +23,7 @@ REFRESH_DAYS = 30
 _HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 _rows: list[dict] | None = None
+_load_lock = threading.Lock()  # parallel fetch threads share one load
 _source_url: str | None = None
 
 
@@ -42,6 +44,11 @@ def _ensure_csv() -> Path | None:
 
 
 def _load() -> list[dict]:
+    with _load_lock:
+        return _load_unlocked()
+
+
+def _load_unlocked() -> list[dict]:
     """Every product row; the file repeats a header line before each section."""
     global _rows
     if _rows is not None:

@@ -25,6 +25,7 @@ from raw_data import _base_name, stage_rank
 from sources.fetch_clinicaltrials import fetch_clinicaltrials
 from sources.fetch_opentargets import _query_graphql, _resolve_entity
 from sources.fetch_regulatory import fetch_regulatory_signals
+from sources.cache import atomic_write
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 MAX_CANDIDATES = 12
@@ -143,5 +144,5 @@ def fetch_indication_drugs(indication: str, mechanism: str | None = None) -> lis
             "url": f"https://platform.opentargets.org/drug/{c['chembl_id']}",
             "date_accessed": today,
         })
-    cache_path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    atomic_write(cache_path, json.dumps(out, ensure_ascii=False))
     return out

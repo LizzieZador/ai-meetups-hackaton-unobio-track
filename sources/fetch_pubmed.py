@@ -10,19 +10,21 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import xml.etree.ElementTree as ET
 from typing import Optional
 
 import requests
 
-from .cache import CACHE_DIR, _slug
+from .cache import CACHE_DIR, _slug, atomic_write
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 # Rate limiting state (NCBI allows max 3 req/sec without key, 10 req/sec with key)
 _last_request_time = 0.0
+_throttle_lock = threading.Lock()  # sources are fetched in parallel threads
 
 
 def _throttle() -> None:
@@ -30,10 +32,11 @@ def _throttle() -> None:
     global _last_request_time
     api_key = os.environ.get("NCBI_API_KEY", "").strip()
     min_interval = 0.11 if api_key else 0.35
-    elapsed = time.time() - _last_request_time
-    if elapsed < min_interval:
-        time.sleep(min_interval - elapsed)
-    _last_request_time = time.time()
+    with _throttle_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_request_time = time.time()
 
 
 def _request_with_retry(url: str, params: dict, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
@@ -90,7 +93,7 @@ def fetch_pubmed(
         records = [r for r in records if _trustworthy(r)]
     if records is not None:
         try:
-            cache_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write(cache_path, json.dumps(records, ensure_ascii=False, indent=2))
         except OSError:
             pass
 

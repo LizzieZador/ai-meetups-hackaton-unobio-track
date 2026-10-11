@@ -21,6 +21,8 @@ from typing import Optional
 
 import requests
 
+from sources.cache import atomic_write
+
 API_URL = "https://api.lens.org/patent/search"
 INCLUDE_FIELDS = [
     "lens_id", "jurisdiction", "doc_number", "kind", "date_published",
@@ -95,7 +97,7 @@ def _search_cached(name: str, token: str, limit: int) -> list[dict]:
     except (requests.RequestException, ValueError):
         return []  # outage/rate-limit this run — don't cache a false empty
 
-    cache_path.write_text(json.dumps(hits, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(cache_path, json.dumps(hits, ensure_ascii=False, indent=2))
     return hits
 
 

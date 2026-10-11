@@ -12,7 +12,7 @@ from typing import Optional
 
 import requests
 
-from .cache import CACHE_DIR, _slug
+from .cache import CACHE_DIR, _slug, atomic_write
 
 API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 
@@ -122,7 +122,7 @@ def fetch_opentargets(
     records = _fetch(mechanism.strip(), indication.strip(), cutoff_date)
     if records is not None:
         try:
-            cache_file.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write(cache_file, json.dumps(records, ensure_ascii=False, indent=2))
         except OSError:
             pass
 

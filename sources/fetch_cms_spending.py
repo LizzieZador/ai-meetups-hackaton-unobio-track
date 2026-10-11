@@ -11,6 +11,8 @@ from pathlib import Path
 
 import requests
 
+from sources.cache import atomic_write
+
 # data.cms.gov dataset ids (annual "Spending by Drug" releases)
 DATASETS = {
     "Part D": "https://data.cms.gov/data-api/v1/dataset/7e0b4365-fd63-4a29-8f5e-e0ac9f66a81b/data",
@@ -48,7 +50,7 @@ def _rows(part: str, name: str) -> list[dict] | None:
         data = resp.json()
     except (requests.RequestException, ValueError):
         return None
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    atomic_write(path, json.dumps(data, ensure_ascii=False))
     return data
 
 
