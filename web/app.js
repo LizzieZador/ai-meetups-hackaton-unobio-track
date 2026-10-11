@@ -896,7 +896,12 @@ let assistantHistory = []; // [{role: "user"|"assistant", text}], capped server-
 // bullet lines, **bold** for key terms). Rendered as that small subset only,
 // and always escaped FIRST — model text never reaches innerHTML unescaped.
 function formatAssistantText(text) {
-  const inline = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // Escaped first, so only these two constructs ever become markup; links
+  // are http(s) only (the tools hand the model sources as [name](url)).
+  const inline = (s) =>
+    esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   const out = [];
   let bullets = [];
   const flush = () => {

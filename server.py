@@ -54,7 +54,8 @@ def split_query(query: str) -> tuple[str, str]:
         parts = re.split(sep, query, maxsplit=1, flags=re.I)
         if len(parts) == 2 and all(p.strip() for p in parts):
             return parts[1].strip(), parts[0].strip()
-    cleaned = re.sub(r"^[\s|/×]+|[\s|/×]+$", "", query) or query
+    # Nothing but separators/whitespace ("  |  ") leaves "" -> rejected by the caller.
+    cleaned = re.sub(r"^[\s|/×]+|[\s|/×]+$", "", query)
     return cleaned, cleaned
 
 

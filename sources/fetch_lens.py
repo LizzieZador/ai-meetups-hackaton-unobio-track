@@ -16,6 +16,7 @@ import datetime
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,9 @@ import requests
 from sources.cache import atomic_write
 
 API_URL = "https://api.lens.org/patent/search"
+# Lens allows 10 requests/minute; a 429 says how long to wait. Waits longer
+# than this are given up on rather than stalling the whole evaluation.
+MAX_RATE_LIMIT_WAIT_S = 15
 INCLUDE_FIELDS = [
     "lens_id", "jurisdiction", "doc_number", "kind", "date_published",
     "biblio.invention_title", "biblio.parties.applicants", "legal_status",
@@ -84,17 +88,23 @@ def _search_cached(name: str, token: str, limit: int) -> list[dict]:
         return json.loads(cache_path.read_text(encoding="utf-8"))
 
     try:
-        resp = requests.post(
-            API_URL,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=body,
-            timeout=20,
-        )
+        for _ in range(3):
+            resp = requests.post(
+                API_URL,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=body,
+                timeout=20,
+            )
+            wait = int(resp.headers.get("x-rate-limit-retry-after-millis") or 0) / 1000
+            if resp.status_code != 429 or not 0 < wait <= MAX_RATE_LIMIT_WAIT_S:
+                break
+            time.sleep(wait + 0.2)
         if resp.status_code == 401:
             return []  # bad/expired token — nothing to fetch, not a crash
         resp.raise_for_status()
         hits = resp.json().get("data", [])
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as e:
+        print(f"[Lens] patent search for {name!r} failed ({e}); skipped this run")
         return []  # outage/rate-limit this run — don't cache a false empty
 
     atomic_write(cache_path, json.dumps(hits, ensure_ascii=False, indent=2))

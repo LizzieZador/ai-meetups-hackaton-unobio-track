@@ -18,6 +18,7 @@ Flow per message:
 """
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -67,7 +68,10 @@ def _to_generic(name: str) -> str:
     isn't a known US brand is returned unchanged (it's likely generic already)."""
     key = name.strip().lower()
     if key not in _generic_cache:
-        generic = _fda_brand_generic(key) or _ema_brand_generic(key) or name.strip()
+        fda = _fda_brand_generic(key)
+        # Biologics licensed since 2017 carry a 4-letter FDA suffix
+        # ("BIMEKIZUMAB-BKZX"); EMA and Open Targets know only the bare INN.
+        generic = (re.sub(r"-[a-z]{4}$", "", fda.lower()) if fda else None) or _ema_brand_generic(key) or name.strip()
         # "FINGOLIMOD HYDROCHLORIDE" -> "fingolimod": sources search the moiety.
         _generic_cache[key] = _base_name(generic) or generic
     return _generic_cache[key]
@@ -103,9 +107,16 @@ def _ema_brand_generic(brand: str) -> str | None:
     return (hit or {}).get("international_non_proprietary_name_common_name") or None
 
 
+def _is_name(value) -> bool:
+    """A usable drug/term: text with at least one letter — a stray number from
+    the planner ("5") used to be searched and matched "Lidoderm 5%"."""
+    return isinstance(value, str) and any(ch.isalpha() for ch in value)
+
+
 def _names(args: dict, key: str) -> list[str]:
     value = args.get(key) or []
-    names = [value] if isinstance(value, str) else [str(v) for v in value][:5]
+    values = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    names = [v.strip() for v in values if _is_name(v)][:5]
     return [_to_generic(n) for n in names] if key == "drugs" else names
 
 
@@ -312,6 +323,7 @@ def _first_json_object(text: str, key: str) -> dict:
     return {}
 
 
+_LIST_ARGS = ("drugs", "terms")
 _REQUIRED_ARGS = {
     "drugs_for_indication": ["indication"], "clinical_trials": ["indication"], "literature": ["query"],
     "target_disease_evidence": ["mechanism", "indication"], "drug_profile": ["drug"],
@@ -321,21 +333,35 @@ _REQUIRED_ARGS = {
 }
 
 
+def _usable_arg(key: str, value) -> bool:
+    if key in _LIST_ARGS:
+        return any(_is_name(v) for v in ([value] if isinstance(value, str) else value if isinstance(value, list) else []))
+    return isinstance(value, bool) or isinstance(value, str) and bool(value.strip())
+
+
+def _run_tool(lookup: dict) -> str:
+    name = lookup["tool"]
+    args = lookup.get("args") if isinstance(lookup.get("args"), dict) else {}
+    # Scalar args must be text (lists only for drugs/terms) — anything else
+    # from the planner counts as not given rather than crashing the tool.
+    args = {k: v for k, v in args.items() if _usable_arg(k, v)}
+    header = f"### {name} {json.dumps(args, ensure_ascii=False)}"
+    missing = [a for a in _REQUIRED_ARGS.get(name, []) if not args.get(a)]
+    if missing:
+        return f"{header}\nnot run — missing argument(s): {', '.join(missing)}"
+    try:
+        result = TOOLS[name][1](args)
+    except Exception as e:  # an API outage costs only this tool
+        result = f"lookup failed ({e.__class__.__name__}: {e})"
+    return f"{header}\n{result}"
+
+
 def _run_tools(lookups: list[dict]) -> str:
-    blocks = []
-    for lookup in lookups:
-        name = lookup["tool"]
-        args = lookup.get("args") if isinstance(lookup.get("args"), dict) else {}
-        missing = [a for a in _REQUIRED_ARGS.get(name, []) if not args.get(a)]
-        if missing:
-            blocks.append(f"### {name} {json.dumps(args, ensure_ascii=False)}\nnot run — missing argument(s): {', '.join(missing)}")
-            continue
-        try:
-            result = TOOLS[name][1](args)
-        except Exception as e:  # a missing arg or an API outage costs only this tool
-            result = f"lookup failed ({e.__class__.__name__}: {e})"
-        blocks.append(f"### {name} {json.dumps(args, ensure_ascii=False)}\n{result}")
-    return "\n\n".join(blocks) or "none (no lookup was needed)"
+    """The planned lookups, run in parallel; blocks keep the planner's order."""
+    if not lookups:
+        return "none (no lookup was needed)"
+    with ThreadPoolExecutor(max_workers=MAX_TOOLS) as pool:
+        return "\n\n".join(pool.map(_run_tool, lookups))
 
 
 # ---------------------------------------------------------------------------

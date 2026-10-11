@@ -73,14 +73,22 @@ def _iso(text: str) -> str | None:
         return None
 
 
+def _bare_inn(name: str) -> str:
+    """A biologic's name without the FDA's distinguishing affixes: the 4-letter
+    suffix of biologics licensed since 2017 ("bimekizumab-bkzx") and the
+    "fam-"/"ado-" prefixes ("fam-trastuzumab deruxtecan-nxki") — drug lists
+    (Open Targets, trials) use the bare INN. Biosimilars share the INN but are
+    351(k), not 351(a), so they still never match."""
+    return re.sub(r"^(?:fam|ado)-|-[a-z]{4}$", "", name.strip().lower())
+
+
 def fetch_biologic_exclusivity(drug_names: list[str]) -> list[dict]:
     rows = _load()
     today = datetime.date.today().isoformat()
     out = []
     for name in dict.fromkeys(n for n in drug_names if n):
-        key = name.strip().lower()
-        matches = [r for r in rows if (r.get("Proper Name") or "").strip().lower() == key
-                   and (r.get("BLA Type") or "").startswith("351(a)")]
+        key = _bare_inn(name)
+        matches = [r for r in rows if _bare_inn(r.get("Proper Name") or "") == key and (r.get("BLA Type") or "").startswith("351(a)")]
         if not matches:
             continue
         def latest(col: str) -> str | None:

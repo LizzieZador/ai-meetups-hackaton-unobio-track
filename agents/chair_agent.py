@@ -7,6 +7,7 @@ new claims. Covers Required Output sections "recommendation", "capital_required"
 import json
 import re
 from collections import defaultdict
+from typing import Optional
 
 from financials import (
     FinancialResult,

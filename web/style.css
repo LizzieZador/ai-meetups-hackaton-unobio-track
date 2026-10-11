@@ -190,7 +190,7 @@ main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .detail-chip b { color:var(--muted); font-weight:600; margin-right:4px; }
 .search-form { flex:1; display:flex; gap:10px; align-items:center; min-width:0; }
 .search-fields { flex:1; display:flex; gap:10px; min-width:0; }
-.search-fields input { flex:1; max-width:420px; padding:11px 14px; font-size:15px; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:6px; outline:none; }
+.search-fields input { flex:1; min-width:0; max-width:420px; padding:11px 14px; font-size:15px; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:6px; outline:none; }
 .search-fields input:focus { border-color:var(--accent); }
 .mode-toggle { flex:none; background:none; color:var(--muted); border-radius:6px; padding:10px 14px; font-size:13px; cursor:pointer; white-space:nowrap; }
 .mode-toggle { border-color:var(--line); }
@@ -492,6 +492,10 @@ body.app-enter #sidebar, body.app-enter main { animation:app-enter .45s ease bot
   #sidebar { display:none; }
   .topbar { padding:12px 60px 12px 16px; flex-wrap:wrap; }
   .search-form { flex-wrap:wrap; }
+  /* fields take their own full-width row; the buttons wrap below them */
+  #search { min-width:0; }
+  .search-fields { flex:1 1 100%; flex-direction:column; }
+  .search-fields input { width:100%; max-width:none; }
   .search-details { grid-template-columns:1fr 1fr; }
   .search-details label.wide { grid-column:1 / -1; }
   #content { padding:16px; }
